@@ -12,6 +12,11 @@ You have access to the following tools:
 {access_tools}
 """
 
+access_cls_str = """
+Here is some possible classification:
+{access_cls}
+"""
+
 access_tool_unit_str = '{tool_name}: {desc} s.args: {args}'
 access_tool_args_unit_str = '"name": "{name}", "description": "{description}", "type": "{type}"'
 
@@ -20,21 +25,21 @@ These are chat history before:
 {chat_history}
 """
 
-chat_history_unit_str = """
-Question: {question}
-Answer: {answer}"""
+task_str = """
+Now you must complete a task on "{task}"，and here is a detailed description of this task:
+{desc}"""
 
 references_str = """
 These are references before:
 {references}
 """
 
-example_str = """
+examples_str = """
 The text between <begin> and <end> is an example article.
 
-<begin>
-{references}
-<end>
+<example>
+{examples}
+</example>
 """
 
 thought_chain_str = """
@@ -57,6 +62,10 @@ Action: {action}
 Action Input: {action_input}
 Observation: {observation}
 """
+
+qa_pair_str = """
+Question: {question}
+Answer: {answer}"""
 
 query_str = """
 Question: {query}

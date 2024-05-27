@@ -42,10 +42,15 @@ def make_access_tools(access_tools: dict):
     return access_tools_str.format(access_tools=access_tools)
 
 
+def make_access_cls(access_cls):
+    access_cls = '["' + '", "'.join(access_cls) + '"]'
+    return access_cls_str.format(access_cls=access_cls)
+
+
 def make_chat_history(chat_history: List[List[str]]):
     tmp = []
     for q, a in chat_history:
-        tmp.append(chat_history_unit_str.format(question=q, answer=a))
+        tmp.append(qa_pair_str.format(question=q, answer=a))
     chat_history = '\n'.join(tmp)
     return chat_history_str.format(chat_history=chat_history)
 
@@ -62,6 +67,21 @@ def make_thought_chain_query(query, thought, action, action_input, observation):
         action_input=action_input,
         observation=observation
     )
+
+
+def make_task(task, desc):
+    return task_str.format(task=task, desc=desc)
+
+
+def make_examples(examples):
+    _ex = []
+    for ex in examples:
+        if isinstance(ex, str):
+            _ex.append(ex)
+        else:
+            _ex.append(qa_pair_str.format(question=ex[0], answer=ex[1]))
+    examples = '\n'.join(_ex)
+    return examples_str.format(examples=examples)
 
 
 def make_query(query):

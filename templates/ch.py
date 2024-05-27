@@ -8,8 +8,13 @@ today_date_str = """今天是{today_date}。"""
 location_str = """现在在{location}。"""
 
 access_tools_str = """
-你可以使用下面列举的工具:
+这是一些可用的工具，请从中挑选适用的工具解决问题:
 {access_tools}
+"""
+
+access_cls_str = """
+这是一些可选的分类项:
+{access_cls}
 """
 
 access_tool_unit_str = '{tool_name}: {desc} s.args: {args}'
@@ -20,21 +25,21 @@ chat_history_str = """
 {chat_history}
 """
 
-chat_history_unit_str = """
-Question: {question}
-Answer: {answer}"""
+task_str = """
+现在需要完成一个"{task}"的任务，这个关于这个任务的详细描述：
+{desc}"""
 
 references_str = """
 这是一些参考资料:
 {references}
 """
 
-example_str = """
-这是一些样例，样例文本使用`<begin>`和`<end>`包裹起来。
+examples_str = """
+这是一些样例，样例文本使用`<example>`和`</example>`包裹起来。
 
-<begin>
-{references}
-<end>
+<example>
+{examples}
+</example>
 """
 
 thought_chain_str = """
@@ -57,6 +62,10 @@ Action: {action}
 Action Input: {action_input}
 Observation: {observation}
 """
+
+qa_pair_str = """
+Question: {question}
+Answer: {answer}"""
 
 query_str = """
 Question: {query}

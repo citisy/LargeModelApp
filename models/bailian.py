@@ -5,9 +5,9 @@ from langchain.callbacks.manager import CallbackManagerForLLMRun
 from langchain.llms.base import LLM
 
 
-class LLM(LLM):
-    api_key : str
-    llm_type : str = 'qwen-max'
+class Model(LLM):
+    api_key: str
+    llm_type: str = 'qwen-max'
 
     def _llm_type(self) -> str:
         return self.llm_type

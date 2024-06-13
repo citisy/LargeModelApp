@@ -1,12 +1,12 @@
-from typing import List, Callable
+from typing import List
 import os
 
 lang = os.environ.get('LANG', 'en')
 
 if lang == 'ch':
-    from .ch import *
+    from templates.excluded.sentences_ch import *
 else:
-    from .en import *
+    from templates.excluded.sentences_en import *
 
 
 def make_role(role):

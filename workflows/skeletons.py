@@ -3,31 +3,42 @@ import traceback
 from typing import List, Dict
 
 
-class BaseModule:
+class Module:
     mask = False
     apply = True
-    mask_nodes = ()
     ignore_errors = True
 
-    def __init__(self, **kwargs):
+    def __init__(self, success_callbacks=[], failure_callbacks=[], **kwargs):
         self._nodes = [
             self.on_process_start,
             self.on_process,
             self.on_process_end,
         ]
+
         self.success_callbacks = []
         self.failure_callbacks = []
+        self.register_success_callbacks(success_callbacks)
+        self.register_failure_callbacks(failure_callbacks)
+
         self.name = type(self).__name__
         self.__dict__.update(kwargs)
 
-    def register_success_callbacks(self, callback):
+    def register_success_callbacks(self, callbacks):
+        for callback in callbacks:
+            self.register_success_callback(callback)
+
+    def register_success_callback(self, callback):
         if hasattr(callback, 'name'):
             name = callback.name
         else:
             name = type(callback).__name__
         self.success_callbacks.append((name, callback))
 
-    def register_failure_callbacks(self, callback):
+    def register_failure_callbacks(self, callbacks):
+        for callback in callbacks:
+            self.register_failure_callback(callback)
+
+    def register_failure_callback(self, callback):
         if hasattr(callback, 'name'):
             name = callback.name
         else:
@@ -41,9 +52,6 @@ class BaseModule:
         try:
             kwargs = self.gen_kwargs(obj, **kwargs)
             for node in self._nodes:
-                if node in self.mask_nodes:
-                    continue
-
                 obj = node(obj, **kwargs)  # noqa
 
             self.on_success(obj, **kwargs)
@@ -78,7 +86,7 @@ class BaseModule:
         return obj
 
 
-class BaseServer(BaseModule):
+class BaseServer(Module):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._modules = [
@@ -94,7 +102,7 @@ class BaseServer(BaseModule):
         return obj
 
 
-class Module(BaseModule):
+class ModuleList(Module):
     def __init__(self, *modules, **kwargs):
         super().__init__(**kwargs)
         self.modules = []
@@ -105,7 +113,12 @@ class Module(BaseModule):
             self.register_module(module)
 
     def register_module(self, module):
-        """you can give an attr of 'name' in the module as the module key"""
+        """set `module.name` as the module key
+        if not a `Module` type, convert it by the rule
+            list -> Sequential
+            tuple -> MultiThreadSequential
+            set -> MultiProcessSequential
+        """
         if isinstance(module, list):
             module = Sequential(*module)
         elif isinstance(module, tuple):
@@ -140,6 +153,33 @@ class Module(BaseModule):
 
         return False
 
+    def ignore_errors_(self, ignore=True):
+        self.ignore_errors = ignore
+
+        for name, module in self.modules:
+            if isinstance(module, (Sequential, Pipeline)):
+                module.ignore_errors_(ignore)
+            else:
+                module.ignore_errors = ignore
+
+    def apply_(self, apply=True):
+        self.apply = apply
+
+        for name, module in self.modules:
+            if isinstance(module, (Sequential, Pipeline)):
+                module.apply_(apply)
+            else:
+                module.apply = apply
+
+    def mask_(self, mask=True):
+        self.mask = mask
+
+        for name, module in self.modules:
+            if isinstance(module, (Sequential, Pipeline)):
+                module.mask_(mask)
+            else:
+                module.mask = mask
+
     def __repr__(self):
         s = f'{self.name}(\n'
         for name, module in self.modules:
@@ -159,7 +199,7 @@ class Module(BaseModule):
         return {self.__class__.__name__: s}
 
 
-class Pipeline(Module):
+class Pipeline(ModuleList):
     """run each module step by step
     the next module start process until the last module has processed all the data,
     and the output of the last module will be the input of the next module
@@ -177,7 +217,7 @@ class Pipeline(Module):
         return obj
 
 
-class Sequential(Module):
+class Sequential(ModuleList):
     """run each data step by step
     the next data start process until the last data has been processed by all the modules,
     the first module must be an instance of `BaseSequentialInput`,
@@ -205,7 +245,7 @@ class Sequential(Module):
         return results
 
 
-class BatchSequential(Module):
+class BatchSequential(ModuleList):
     """run each data step by step
     the next batch data start process until the last batch data has been processed by all the modules,
     and must have an input layer which returns an iterable obj
@@ -293,7 +333,7 @@ class MultiThreadSequential(Sequential):
         return results
 
 
-class BaseSequentialInput(BaseModule):
+class BaseSequentialInput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
 
@@ -322,7 +362,7 @@ class DictSequentialInput(BaseSequentialInput):
             yield obj
 
 
-class BasePipelineInput(BaseModule):
+class BasePipelineInput(Module):
     """default input module for Sequential
     do nothing, just return the inputs obj"""
 

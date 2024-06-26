@@ -2,7 +2,7 @@
 collect from https://github.com/Physton/sd-webui-prompt-all-in-one/blob/main/group_tags/zh_CN.yaml
 """
 
-d = {
+word_dict = {
     "人物": {
         "对象": {
             "1女孩": "1girl",

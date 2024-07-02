@@ -1,6 +1,7 @@
 import contextlib
 import traceback
 from typing import List, Dict
+from utils import log_utils
 
 
 class Module:
@@ -8,7 +9,9 @@ class Module:
     apply = True
     ignore_errors = True
 
-    def __init__(self, success_callbacks=[], failure_callbacks=[], **kwargs):
+    def __init__(self, logger=None, success_callbacks=[], failure_callbacks=[], **kwargs):
+        self.logger = log_utils.get_logger(logger)
+
         self._nodes = [
             self.on_process_start,
             self.on_process,
@@ -57,7 +60,10 @@ class Module:
             self.on_success(obj, **kwargs)
             return obj
         except Exception as e:
-            self.on_failure(obj, **kwargs)
+            tb_info = str(traceback.format_exc()).rstrip('\n')
+            self.logger.error(tb_info)
+
+            self.on_failure(e, **kwargs)
 
             if not self.ignore_errors:
                 raise e
@@ -153,32 +159,34 @@ class ModuleList(Module):
 
         return False
 
-    def ignore_errors_(self, ignore=True):
-        self.ignore_errors = ignore
+    def apply_setting(self, obj, func_name, cur_func_name):
+        setattr(self, func_name, obj)
 
         for name, module in self.modules:
             if isinstance(module, (Sequential, Pipeline)):
-                module.ignore_errors_(ignore)
+                module.apply_setting(obj, func_name, cur_func_name)
             else:
-                module.ignore_errors = ignore
+                setattr(module, func_name, obj)
+
+    def logger_(self, logger=None):
+        self.apply_setting(log_utils.get_logger(logger), 'logger', 'logger_')
+
+    def ignore_errors_(self, ignore=True):
+        self.apply_setting(ignore, 'ignore_errors', 'ignore_errors_')
 
     def apply_(self, apply=True):
-        self.apply = apply
-
-        for name, module in self.modules:
-            if isinstance(module, (Sequential, Pipeline)):
-                module.apply_(apply)
-            else:
-                module.apply = apply
+        self.apply_setting(apply, 'apply', 'apply_')
 
     def mask_(self, mask=True):
-        self.mask = mask
+        self.apply_setting(mask, 'mask', 'mask_')
 
-        for name, module in self.modules:
-            if isinstance(module, (Sequential, Pipeline)):
-                module.mask_(mask)
-            else:
-                module.mask = mask
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self.get_module(key)
+        elif isinstance(key, int):
+            return self.modules[key][1]
+        else:
+            raise
 
     def __repr__(self):
         s = f'{self.name}(\n'
@@ -217,6 +225,41 @@ class Pipeline(ModuleList):
         return obj
 
 
+class LoopPipeline(Pipeline):
+    check_before_loop = True
+
+    def on_process(self, obj, **kwargs):
+        it = 0
+
+        while True:
+            if self.check_before_loop and self.check(obj, it=it, **kwargs):
+                break
+
+            for name, module in self.modules:
+                if self.module_control(name, module, **kwargs):
+                    continue
+
+                obj = module(obj, it=it, **kwargs)
+                if isinstance(obj, Exception):
+                    raise obj
+
+            if not self.check_before_loop and self.check(obj, it=it, **kwargs):
+                break
+
+        return obj
+
+    def check(self, obj, it=None, **kwargs):
+        raise NotImplemented
+
+
+class SwitchPipeline(Pipeline):
+    def on_process(self, obj, **kwargs):
+        raise NotImplemented
+
+    def switch(self, obj, **kwargs):
+        raise NotImplemented
+
+
 class Sequential(ModuleList):
     """run each data step by step
     the next data start process until the last data has been processed by all the modules,
@@ -224,8 +267,8 @@ class Sequential(ModuleList):
     if not provided, default creates a new `BaseSequentialInput` module
     """
 
-    def __init__(self, *modules, **kwargs):
-        if not isinstance(modules[0], BaseSequentialInput):
+    def __init__(self, *modules, force_check=True, **kwargs):
+        if force_check and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
         super().__init__(*modules, **kwargs)
 
@@ -245,17 +288,13 @@ class Sequential(ModuleList):
         return results
 
 
-class BatchSequential(ModuleList):
+class BatchSequential(Sequential):
     """run each data step by step
     the next batch data start process until the last batch data has been processed by all the modules,
     and must have an input layer which returns an iterable obj
     """
 
-    def __init__(self, modules: list, batch_size=None, **kwargs):
-        if not isinstance(modules[0], BaseSequentialInput):
-            modules = [BaseSequentialInput()] + list(modules)
-        super().__init__(*modules, **kwargs)
-        self.batch_size = batch_size or 1
+    batch_size = 1
 
     def on_process(self, obj, mask_modules=(), **kwargs):
         _, input_module = self.modules[0]

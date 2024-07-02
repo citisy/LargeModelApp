@@ -4,13 +4,15 @@ import warnings
 import numpy as np
 from typing import List
 from utils import configs, converter
+from workflows.skeletons import Module
 
 
-class Model:
+class Model(Module):
     """base on api of stable-diffusion-webui
     https://github.com/AUTOMATIC1111/stable-diffusion-webui"""
 
-    def __init__(self, host='127.0.0.1', port=7860):
+    def __init__(self, host='127.0.0.1', port=7860, **kwargs):
+        super().__init__(**kwargs)
         self.host = host
         self.port = port
 
@@ -56,16 +58,23 @@ class Model:
     def get_example_post_output(self, path):
         pass
 
-    def __call__(self, path, **post_kwargs):
+    def on_process(self, obj, **kwargs):
+        path = obj['req_path']
+        post_kwargs = obj['post_kwargs']
+        ret = self._call(path, **post_kwargs)
+
+        obj.update(ret=ret)
+        return obj
+
+    def _call(self, path, **post_kwargs):
         kwargs = self.get_example_post_input(path)
         kwargs.update(post_kwargs)
         url = f'http://{self.host}:{self.port}/{path}'
         url = re.sub(r'([^:])//+', r'\1/', url)
         r = requests.post(url, json=kwargs)
-        if r.status_code == 200:
-            return r.json()
-        else:
-            raise Exception(r.json())
+        assert r.status_code == 200, r.json()
+
+        return r.json()
 
     def txt2img(self, **post_kwargs) -> List[np.ndarray]:
         js = self('/sdapi/v1/txt2img', **post_kwargs)

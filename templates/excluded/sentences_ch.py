@@ -26,7 +26,7 @@ chat_history_str = """
 """
 
 task_str = """
-现在需要完成一个"{task}"的任务，这个关于这个任务的详细描述：
+现在需要完成一个"{task}"的任务，这是关于这个任务的详细描述：
 {desc}"""
 
 references_str = """
@@ -52,7 +52,7 @@ Action Input: 你下一步行动中使用的工具的输入
 Observation: 你下一步行动的结果返回
 ... (Thought/Action/Action Input/Observation 这些操作步骤可以重复多次)
 Thought: 我现在知道怎么回答这个问题了
-Final Answer: 上述的问题的最终的答案是
+Final Answer: 上述问题的最终答案
 """
 
 thought_chain_query_str = """

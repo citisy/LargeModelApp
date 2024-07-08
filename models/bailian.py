@@ -1,14 +1,14 @@
+# pip install dashscope
 from dashscope import Generation
 from http import HTTPStatus
-from typing import Any, List, Mapping, Optional
-from workflows.skeletons import Module
+from . import openai
 
 
-class Model(Module):
+class Model(openai.Base):
     api_key: str
     llm_type: str = 'qwen-max'
 
-    def on_process(self, obj, **kwargs):
+    def on_process_start(self, obj, **kwargs):
         # important post_kwargs: [prompt, messages, history]
         post_kwargs = obj['post_kwargs']
 
@@ -24,8 +24,6 @@ class Model(Module):
             response.code, response.message
         )
 
-        content = response.output.choices[0]['message']['content']
-
-        obj.update(content=content)
-
+        post_result = response.output
+        obj.update(post_result=post_result)
         return obj

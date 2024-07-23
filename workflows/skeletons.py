@@ -7,7 +7,7 @@ from utils import log_utils
 class Module:
     mask = False
     apply = True
-    ignore_errors = True
+    ignore_errors = False
 
     def __init__(self, logger=None, success_callbacks=[], failure_callbacks=[], **kwargs):
         self.logger = log_utils.get_logger(logger)
@@ -229,27 +229,32 @@ class LoopPipeline(Pipeline):
     check_before_loop = True
 
     def on_process(self, obj, **kwargs):
-        it = 0
+        counter = self.gen_counter(obj, **kwargs)
+        steps = 0
 
         while True:
-            if self.check_before_loop and self.check(obj, it=it, **kwargs):
+            if self.check_before_loop and not self.check(obj, counter=counter, steps=steps, **kwargs):
                 break
 
-            for name, module in self.modules:
-                if self.module_control(name, module, **kwargs):
-                    continue
+            obj = super().on_process(obj, counter=counter, steps=steps, **kwargs)
+            counter = self.update_counter(obj, counter=counter, steps=steps, **kwargs)
 
-                obj = module(obj, it=it, **kwargs)
-                if isinstance(obj, Exception):
-                    raise obj
-
-            if not self.check_before_loop and self.check(obj, it=it, **kwargs):
+            if not self.check_before_loop and not self.check(obj, counter=counter, steps=steps, **kwargs):
                 break
+
+            steps += 1
 
         return obj
 
-    def check(self, obj, it=None, **kwargs):
+    def check(self, obj, counter=None, steps=0, **kwargs):
+        """False to break the loop"""
         raise NotImplemented
+
+    def gen_counter(self, obj, **kwargs):
+        return 0
+
+    def update_counter(self, obj, counter=0, **kwargs):
+        return counter + 1
 
 
 class SwitchPipeline(Pipeline):

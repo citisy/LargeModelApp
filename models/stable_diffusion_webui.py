@@ -20,6 +20,18 @@ class Model(Module):
         r = requests.get(url)
         self.cache = r.json()
 
+    def make_tree_paths(self):
+        tree_paths = {}
+        for k, v in self.cache['paths'].items():
+            p = tree_paths
+            a = k.split('/')
+            for aa in a[:-1]:
+                p = p.setdefault(aa, {})
+
+            p[a[-1]] = v
+
+        return tree_paths
+
     def get_apis(self, keys: List[str] or str = None):
         """"
         >>> model = Model()
@@ -43,13 +55,17 @@ class Model(Module):
     def get_example_post_input(self, path):
         api_info = self.cache['paths'][path]
         if 'post' in api_info:
-            schema = api_info['post']['requestBody']['content']['application/json']['schema']['$ref']
-            p = self.cache
-            for s in schema.split('/')[1:]:
-                p = p[s]
-            ret = configs.parse_pydantic_schema(p, {})
-            ret = configs.parse_pydantic_dict(ret, return_default_value=True)
-            return ret
+            schema = api_info['post']['requestBody']['content']['application/json']['schema']
+            if '$ref' in schema:
+                ref = schema['$ref']
+                p = self.cache
+                for s in ref.split('/')[1:]:
+                    p = p[s]
+                ret = configs.parse_pydantic_schema(p, {})
+                ret = configs.parse_pydantic_dict(ret, return_default_value=True)
+                return ret
+            else:
+                return {}
 
         else:
             warnings.warn('can not find post method')
@@ -77,20 +93,30 @@ class Model(Module):
         return r.json()
 
     def txt2img(self, **post_kwargs) -> List[np.ndarray]:
-        js = self('/sdapi/v1/txt2img', **post_kwargs)
+        obj = self(dict(
+            req_path='/sdapi/v1/txt2img',
+            post_kwargs=post_kwargs
+        ))
+
+        ret = obj['ret']
 
         images = []
-        for image in js['images']:
+        for image in ret['images']:
             image = converter.DataConvert.base64_to_image(image)
             images.append(image)
 
         return images
 
     def img2img(self, **post_kwargs) -> List[np.ndarray]:
-        js = self('/sdapi/v1/img2img', **post_kwargs)
+        obj = self(dict(
+            req_path='/sdapi/v1/img2img',
+            post_kwargs=post_kwargs
+        ))
+
+        ret = obj['ret']
 
         images = []
-        for image in js['images']:
+        for image in ret['images']:
             image = converter.DataConvert.base64_to_image(image)
             images.append(image)
 

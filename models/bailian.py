@@ -1,21 +1,20 @@
-# pip install dashscope
-from dashscope import Generation
+from dashscope import Generation    # pip install dashscope
 from http import HTTPStatus
 from . import openai
 
 
 class Model(openai.Base):
+    model: str = 'qwen-max'
     api_key: str
-    llm_type: str = 'qwen-max'
 
-    def on_process_start(self, obj, **kwargs):
+    def on_process(self, obj, **kwargs):
         # important post_kwargs: [prompt, messages, history]
         post_kwargs = obj['post_kwargs']
 
         response = Generation.call(
-            self.llm_type,
+            self.model,
             api_key=self.api_key,
-            result_format='message',  # 设置输出为'message'格式
+            result_format='message',
             **post_kwargs
         )
 

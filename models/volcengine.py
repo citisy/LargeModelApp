@@ -10,16 +10,15 @@ class Model(openai.Base):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # pip install --upgrade 'volcengine-python-sdk[ark]'
-        from volcenginesdkarkruntime import Ark
+        from volcenginesdkarkruntime import Ark  # # pip install --upgrade 'volcengine-python-sdk[ark]'
 
         self.client = Ark(
             base_url=self.base_url,
             ak=self.ak,
-            sk=self.sk
+            sk=self.sk,
         )
 
-    def on_process_start(self, obj, **kwargs):
+    def on_process(self, obj, **kwargs):
         # important post_kwargs: [messages]
         post_kwargs = obj['post_kwargs']
 

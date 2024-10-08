@@ -1,7 +1,7 @@
-import contextlib
 import traceback
 from typing import List, Dict
-from utils import log_utils
+
+from utils import log_utils, op_utils
 
 
 class Module:
@@ -60,9 +60,6 @@ class Module:
             self.on_success(obj, **kwargs)
             return obj
         except Exception as e:
-            tb_info = str(traceback.format_exc()).rstrip('\n')
-            self.logger.error(tb_info)
-
             self.on_failure(e, **kwargs)
 
             if not self.ignore_errors:
@@ -81,6 +78,8 @@ class Module:
         return e
 
     def on_failure(self, e, **kwargs):
+        tb_info = str(traceback.format_exc()).rstrip('\n')
+        self.logger.error(tb_info)
         obj = self.parse_exception(e, **kwargs)
         for name, callback in self.failure_callbacks:
             callback(obj, **kwargs)
@@ -90,6 +89,13 @@ class Module:
         for name, callback in self.success_callbacks:
             callback(obj, **kwargs)
         return obj
+
+    def get_default_kwargs(self, k, kwargs: dict):
+        return kwargs.get(k, self.__dict__.get(k))
+
+    def set_default_kwargs(self, kwargs: dict):
+        for k in log_utils.get_class_annotations(self):
+            kwargs.setdefault(k, self.__dict__.get(k))
 
 
 class BaseServer(Module):
@@ -128,9 +134,9 @@ class ModuleList(Module):
         if isinstance(module, list):
             module = Sequential(*module)
         elif isinstance(module, tuple):
-            module = MultiThreadSequential(*module)
+            module = MultiThreadModuleSequential(*module)
         elif isinstance(module, set):
-            module = MultiProcessSequential(module)
+            module = MultiProcessModuleSequential(module)
         elif isinstance(module, dict):
             pass
 
@@ -257,6 +263,17 @@ class LoopPipeline(Pipeline):
         return counter + 1
 
 
+class RetryPipeline(Pipeline):
+    count = 3
+    wait = 15
+    err_type = Exception
+
+    def __init__(self, *modules, **kwargs):
+        super().__init__(*modules, **kwargs)
+        i = self._nodes.index(self.on_process)
+        self._nodes[i] = op_utils.Retry(stdout_method=self.logger.info, count=self.count, wait=self.wait).add_try(err_type=self.err_type)(self._nodes[i])
+
+
 class SwitchPipeline(Pipeline):
     def on_process(self, obj, **kwargs):
         raise NotImplemented
@@ -265,12 +282,70 @@ class SwitchPipeline(Pipeline):
         raise NotImplemented
 
 
+class MultiProcessPipeline(Pipeline):
+    """each modules process by multiple processes
+    each module will have the same inputs,
+    use inplace mode to return the outputs"""
+    n_pool = None
+
+    def on_process(self, obj, **kwargs):
+        from multiprocessing.pool import Pool
+
+        pool = Pool(self.n_pool)
+        processes = []
+        for name, module in self.modules:
+            if self.module_control(name, module, **kwargs):
+                continue
+
+            processes.append(pool.apply_async(module, args=(obj,), kwds=kwargs))
+
+        pool.close()
+        pool.join()
+
+        for p in processes:
+            _obj = p.get()
+            if isinstance(_obj, Exception):
+                raise _obj
+
+        # inplace mode to return the outputs
+        return obj
+
+
+class MultiThreadPipeline(Pipeline):
+    """each modules process by multiple threads
+    each module will have the same inputs,
+    use inplace mode to return the outputs"""
+
+    def __init__(self, *modules, n_pool=None, **kwargs):
+        super().__init__(*modules, **kwargs)
+        from concurrent.futures import ThreadPoolExecutor
+        self.pool = ThreadPoolExecutor(max_workers=n_pool)
+
+    def on_process(self, obj, **kwargs):
+        threads = []
+        for name, module in self.modules:
+            if self.module_control(name, module, **kwargs):
+                continue
+
+            threads.append(self.pool.submit(module, obj, **kwargs))
+
+        for t in threads:
+            _obj = t.result()
+            if isinstance(_obj, Exception):
+                raise _obj
+
+        # inplace mode to return the outputs
+        return obj
+
+
 class Sequential(ModuleList):
     """run each data step by step
     the next data start process until the last data has been processed by all the modules,
     the first module must be an instance of `BaseSequentialInput`,
     if not provided, default creates a new `BaseSequentialInput` module
     """
+
+    skip_exception = False
 
     def __init__(self, *modules, force_check=True, **kwargs):
         if force_check and not isinstance(modules[0], BaseSequentialInput):
@@ -281,16 +356,23 @@ class Sequential(ModuleList):
         _, input_module = self.modules[0]
         results = []
         for iter_obj in input_module(obj, **kwargs):
-            for name, module in self.modules[1:]:
-                if self.module_control(name, module, **kwargs):
-                    continue
-
-                iter_obj = module(iter_obj, **kwargs)
-                if isinstance(iter_obj, Exception):
-                    raise iter_obj
+            try:
+                iter_obj = self._iter_module(iter_obj, **kwargs)
+            except Exception as e:
+                if not self.skip_exception:
+                    raise e
             results.append(iter_obj)
-
         return results
+
+    def _iter_module(self, iter_obj, **kwargs):
+        for name, module in self.modules[1:]:
+            if self.module_control(name, module, **kwargs):
+                continue
+
+            iter_obj = module(iter_obj, **kwargs)
+            if isinstance(iter_obj, Exception):
+                raise iter_obj
+        return iter_obj
 
 
 class BatchSequential(Sequential):
@@ -332,47 +414,108 @@ class BatchSequential(Sequential):
         return results
 
 
-def fake_func(x):
-    return x
+class MultiProcessModuleSequential(Sequential):
+    """each modules process by multiple processes
+    each module will have the same inputs,
+    use inplace mode to return the outputs"""
 
+    n_pool = None
 
-class MultiProcessSequential(Sequential):
-    """todo: something wrong"""
-
-    def __init__(self, *modules, n_pool=None, **kwargs):
-        super().__init__(*modules, **kwargs)
+    def _iter_module(self, iter_obj, **kwargs):
         from multiprocessing.pool import Pool
 
-        self.pool = Pool(n_pool)
+        pool = Pool(self.n_pool)
+        for name, module in self.modules[1:]:
+            if self.module_control(name, module, **kwargs):
+                continue
 
-    def on_process(self, obj, mask_modules=(), **kwargs):
+            pool.apply_async(module, args=(iter_obj,), kwds=kwargs)
+
+        pool.close()
+        pool.join()
+
+        # inplace mode to return the outputs
+        return iter_obj
+
+
+class MultiProcessDataSequential(Sequential):
+    """each data process by multiple processes"""
+    n_pool = None
+
+    def on_process(self, obj, **kwargs):
+        from multiprocessing.pool import Pool
+
+        pool = Pool(self.n_pool)
+
         _, input_module = self.modules[0]
         results = []
+        processes = []
         for iter_obj in input_module(obj, **kwargs):
-            for name, module in self.pool.map(fake_func, self.modules[1:]):
-                if name in mask_modules:
-                    continue
-                iter_obj = module(iter_obj, **kwargs)
-            results.append(iter_obj)
+            try:
+                processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
+
+            except Exception as e:
+                if not self.skip_exception:
+                    raise e
+
+        pool.close()
+        pool.join()
+
+        for p in processes:
+            results.append(p.get())
 
         return results
 
 
-class MultiThreadSequential(Sequential):
+class MultiThreadModuleSequential(Sequential):
+    """each module processed by multiple threads,
+    each module will have the same inputs,
+    use inplace mode to return the outputs"""
+
     def __init__(self, *modules, n_pool=None, **kwargs):
         super().__init__(*modules, **kwargs)
         from concurrent.futures import ThreadPoolExecutor
         self.pool = ThreadPoolExecutor(max_workers=n_pool)
 
-    def on_process(self, obj, mask_modules=(), **kwargs):
+    def _iter_module(self, iter_obj, **kwargs):
+        threads = []
+        for name, module in self.modules[1:]:
+            if self.module_control(name, module, **kwargs):
+                continue
+
+            threads.append(self.pool.submit(module, iter_obj, **kwargs))
+
+        for t in threads:
+            _iter_obj = t.result()
+            if isinstance(_iter_obj, Exception):
+                raise _iter_obj
+
+        # inplace mode to return the outputs
+        return iter_obj
+
+
+class MultiThreadDataSequential(Sequential):
+    """each data process by multiple threads"""
+
+    def __init__(self, *modules, n_pool=None, **kwargs):
+        super().__init__(*modules, **kwargs)
+        from concurrent.futures import ThreadPoolExecutor
+        self.pool = ThreadPoolExecutor(max_workers=n_pool)
+
+    def on_process(self, obj, **kwargs):
         _, input_module = self.modules[0]
         results = []
+        threads = []
         for iter_obj in input_module(obj, **kwargs):
-            for name, module in self.pool.map(fake_func, self.modules[1:]):
-                if name in mask_modules:
-                    continue
-                iter_obj = module(iter_obj, **kwargs)
-            results.append(iter_obj)
+            try:
+                threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
+
+            except Exception as e:
+                if not self.skip_exception:
+                    raise e
+
+        for t in threads:
+            results.append(t.result())
 
         return results
 

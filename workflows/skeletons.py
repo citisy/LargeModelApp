@@ -1,6 +1,8 @@
 import traceback
 from typing import List, Dict
 
+from tqdm import tqdm
+
 from utils import log_utils, op_utils
 
 
@@ -315,11 +317,13 @@ class MultiThreadPipeline(Pipeline):
     """each modules process by multiple threads
     each module will have the same inputs,
     use inplace mode to return the outputs"""
+    n_pool = None
+    verbose = False
 
-    def __init__(self, *modules, n_pool=None, **kwargs):
+    def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
         from concurrent.futures import ThreadPoolExecutor
-        self.pool = ThreadPoolExecutor(max_workers=n_pool)
+        self.pool = ThreadPoolExecutor(max_workers=self.n_pool)
 
     def on_process(self, obj, **kwargs):
         threads = []
@@ -328,6 +332,9 @@ class MultiThreadPipeline(Pipeline):
                 continue
 
             threads.append(self.pool.submit(module, obj, **kwargs))
+
+        if self.verbose:
+            threads = tqdm(threads)
 
         for t in threads:
             _obj = t.result()
@@ -420,6 +427,7 @@ class MultiProcessModuleSequential(Sequential):
     use inplace mode to return the outputs"""
 
     n_pool = None
+    verbose = False
 
     def _iter_module(self, iter_obj, **kwargs):
         from multiprocessing.pool import Pool
@@ -451,18 +459,17 @@ class MultiProcessDataSequential(Sequential):
         results = []
         processes = []
         for iter_obj in input_module(obj, **kwargs):
-            try:
-                processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
-
-            except Exception as e:
-                if not self.skip_exception:
-                    raise e
+            processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
 
         pool.close()
         pool.join()
 
         for p in processes:
-            results.append(p.get())
+            try:
+                results.append(p.get())
+            except Exception as e:
+                if not self.skip_exception:
+                    raise e
 
         return results
 
@@ -471,11 +478,13 @@ class MultiThreadModuleSequential(Sequential):
     """each module processed by multiple threads,
     each module will have the same inputs,
     use inplace mode to return the outputs"""
+    n_pool = None
+    verbose = False
 
-    def __init__(self, *modules, n_pool=None, **kwargs):
+    def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
         from concurrent.futures import ThreadPoolExecutor
-        self.pool = ThreadPoolExecutor(max_workers=n_pool)
+        self.pool = ThreadPoolExecutor(max_workers=self.n_pool)
 
     def _iter_module(self, iter_obj, **kwargs):
         threads = []
@@ -484,6 +493,9 @@ class MultiThreadModuleSequential(Sequential):
                 continue
 
             threads.append(self.pool.submit(module, iter_obj, **kwargs))
+
+        if self.verbose:
+            threads = tqdm(threads)
 
         for t in threads:
             _iter_obj = t.result()
@@ -496,26 +508,30 @@ class MultiThreadModuleSequential(Sequential):
 
 class MultiThreadDataSequential(Sequential):
     """each data process by multiple threads"""
+    n_pool = None
+    verbose = False
 
-    def __init__(self, *modules, n_pool=None, **kwargs):
+    def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
         from concurrent.futures import ThreadPoolExecutor
-        self.pool = ThreadPoolExecutor(max_workers=n_pool)
+        self.pool = ThreadPoolExecutor(max_workers=self.n_pool)
 
     def on_process(self, obj, **kwargs):
         _, input_module = self.modules[0]
         results = []
         threads = []
         for iter_obj in input_module(obj, **kwargs):
-            try:
-                threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
+            threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
 
+        if self.verbose:
+            threads = tqdm(threads)
+
+        for t in threads:
+            try:
+                results.append(t.result())
             except Exception as e:
                 if not self.skip_exception:
                     raise e
-
-        for t in threads:
-            results.append(t.result())
 
         return results
 

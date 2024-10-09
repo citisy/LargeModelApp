@@ -1,7 +1,5 @@
 import traceback
-from typing import List, Dict
-
-from tqdm import tqdm
+from typing import List, Dict, Optional
 
 from utils import log_utils, op_utils
 
@@ -11,7 +9,7 @@ class Module:
     apply = True
     ignore_errors = False
 
-    def __init__(self, logger=None, success_callbacks=[], failure_callbacks=[], **kwargs):
+    def __init__(self, logger=None, success_callbacks=None, failure_callbacks=None, **kwargs):
         self.logger = log_utils.get_logger(logger)
 
         self._nodes = [
@@ -19,6 +17,11 @@ class Module:
             self.on_process,
             self.on_process_end,
         ]
+
+        if success_callbacks is None:
+            success_callbacks = []
+        if failure_callbacks is None:
+            failure_callbacks = []
 
         self.success_callbacks = []
         self.failure_callbacks = []
@@ -50,6 +53,16 @@ class Module:
             name = type(callback).__name__
         self.failure_callbacks.append((name, callback))
 
+    def initialize_success_callbacks(self, obj, **kwargs):
+        for name, callback in self.success_callbacks:
+            if hasattr(callback, 'init'):
+                callback.init(obj, **kwargs)
+
+    def initialize_failure_callbacks(self, obj, **kwargs):
+        for name, callback in self.failure_callbacks:
+            if hasattr(callback, 'init'):
+                callback.init(obj, **kwargs)
+
     def gen_kwargs(self, obj, **kwargs):
         return kwargs
 
@@ -68,6 +81,8 @@ class Module:
                 raise e
 
     def on_process_start(self, obj, **kwargs):
+        self.initialize_success_callbacks(obj, **kwargs)
+        self.initialize_failure_callbacks(obj, **kwargs)
         return obj
 
     def on_process(self, obj, **kwargs):
@@ -216,7 +231,7 @@ class ModuleList(Module):
 
 
 class Pipeline(ModuleList):
-    """run each module step by step
+    """run module step by step
     the next module start process until the last module has processed all the data,
     and the output of the last module will be the input of the next module
     """
@@ -237,17 +252,23 @@ class LoopPipeline(Pipeline):
     check_before_loop = True
 
     def on_process(self, obj, **kwargs):
-        counter = self.gen_counter(obj, **kwargs)
-        steps = 0
+        counter: Optional[int, dict] = self.gen_counter(obj, **kwargs)   # record the check counter
+        steps: int = 0   # record the loop step
 
         while True:
-            if self.check_before_loop and not self.check(obj, counter=counter, steps=steps, **kwargs):
+            # except multiple values error
+            kwargs.update(counter=counter, steps=steps)
+
+            if self.check_before_loop and not self.check(obj, **kwargs):
                 break
 
-            obj = super().on_process(obj, counter=counter, steps=steps, **kwargs)
-            counter = self.update_counter(obj, counter=counter, steps=steps, **kwargs)
+            obj = super().on_process(obj, **kwargs)
+            counter = self.update_counter(obj, **kwargs)
 
-            if not self.check_before_loop and not self.check(obj, counter=counter, steps=steps, **kwargs):
+            # except multiple values error
+            kwargs.update(counter=counter, steps=steps)
+
+            if not self.check_before_loop and not self.check(obj, **kwargs):
                 break
 
             steps += 1
@@ -285,7 +306,7 @@ class SwitchPipeline(Pipeline):
 
 
 class MultiProcessPipeline(Pipeline):
-    """each modules process by multiple processes
+    """modules parallel by multiple processes
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
@@ -314,11 +335,10 @@ class MultiProcessPipeline(Pipeline):
 
 
 class MultiThreadPipeline(Pipeline):
-    """each modules process by multiple threads
+    """modules parallel by multiple threads
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
-    verbose = False
 
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
@@ -333,9 +353,6 @@ class MultiThreadPipeline(Pipeline):
 
             threads.append(self.pool.submit(module, obj, **kwargs))
 
-        if self.verbose:
-            threads = tqdm(threads)
-
         for t in threads:
             _obj = t.result()
             if isinstance(_obj, Exception):
@@ -346,7 +363,7 @@ class MultiThreadPipeline(Pipeline):
 
 
 class Sequential(ModuleList):
-    """run each data step by step
+    """run data step by step
     the next data start process until the last data has been processed by all the modules,
     the first module must be an instance of `BaseSequentialInput`,
     if not provided, default creates a new `BaseSequentialInput` module
@@ -354,10 +371,71 @@ class Sequential(ModuleList):
 
     skip_exception = False
 
-    def __init__(self, *modules, force_check=True, **kwargs):
+    def __init__(self, *modules, force_check=True, iter_success_callbacks=None, iter_failure_callbacks=None, **kwargs):
         if force_check and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
+
+        if iter_success_callbacks is None:
+            iter_success_callbacks = []
+        if iter_failure_callbacks is None:
+            iter_failure_callbacks = []
+
+        self.iter_success_callbacks = []
+        self.iter_failure_callbacks = []
+        self.register_iter_success_callbacks(iter_success_callbacks)
+        self.register_iter_failure_callbacks(iter_failure_callbacks)
+
         super().__init__(*modules, **kwargs)
+
+    def register_iter_success_callbacks(self, callbacks):
+        for callback in callbacks:
+            self.register_iter_success_callback(callback)
+
+    def register_iter_success_callback(self, callback):
+        if hasattr(callback, 'name'):
+            name = callback.name
+        else:
+            name = type(callback).__name__
+        self.iter_success_callbacks.append((name, callback))
+
+    def register_iter_failure_callbacks(self, callbacks):
+        for callback in callbacks:
+            self.register_iter_failure_callback(callback)
+
+    def register_iter_failure_callback(self, callback):
+        if hasattr(callback, 'name'):
+            name = callback.name
+        else:
+            name = type(callback).__name__
+        self.iter_failure_callbacks.append((name, callback))
+
+    def initialize_iter_success_callbacks(self, obj, **kwargs):
+        for name, callback in self.iter_success_callbacks:
+            if hasattr(callback, 'init'):
+                callback.init(obj, **kwargs)
+
+    def initialize_iter_failure_callbacks(self, obj, **kwargs):
+        for name, callback in self.iter_failure_callbacks:
+            if hasattr(callback, 'init'):
+                callback.init(obj, **kwargs)
+
+    def on_iter_success(self, obj, **kwargs):
+        for name, callback in self.iter_success_callbacks:
+            callback(obj, **kwargs)
+        return obj
+
+    def on_iter_failure(self, e, **kwargs):
+        tb_info = str(traceback.format_exc()).rstrip('\n')
+        self.logger.error(tb_info)
+        obj = self.parse_exception(e, **kwargs)
+        for name, callback in self.iter_failure_callbacks:
+            callback(obj, **kwargs)
+        return obj
+
+    def on_process_start(self, obj, **kwargs):
+        self.initialize_iter_success_callbacks(obj, **kwargs)
+        self.initialize_iter_failure_callbacks(obj, **kwargs)
+        return super().on_process_start(obj, **kwargs)
 
     def on_process(self, obj, **kwargs):
         _, input_module = self.modules[0]
@@ -365,7 +443,9 @@ class Sequential(ModuleList):
         for iter_obj in input_module(obj, **kwargs):
             try:
                 iter_obj = self._iter_module(iter_obj, **kwargs)
+                self.on_iter_success(iter_obj, **kwargs)
             except Exception as e:
+                self.on_iter_failure(e, **kwargs)
                 if not self.skip_exception:
                     raise e
             results.append(iter_obj)
@@ -383,7 +463,7 @@ class Sequential(ModuleList):
 
 
 class BatchSequential(Sequential):
-    """run each data step by step
+    """run batch data step by step
     the next batch data start process until the last batch data has been processed by all the modules,
     and must have an input layer which returns an iterable obj
     """
@@ -394,40 +474,43 @@ class BatchSequential(Sequential):
         _, input_module = self.modules[0]
         results = []
         i = 0
-        iter_obj = []
-        for tmp_obj in input_module(obj, **kwargs):
+        iter_objs = []
+        for iter_obj in input_module(obj, **kwargs):
             i += 1
 
-            iter_obj.append(tmp_obj)
+            iter_objs.append(iter_obj)
             if i < self.batch_size:
                 continue
 
-            results = self.batch_process(iter_obj, results, **kwargs)
+            results = self._iter(iter_objs, results, **kwargs)
             i = 0
-            iter_obj = []
+            iter_objs = []
 
-        if iter_obj:
-            results = self.batch_process(iter_obj, results, **kwargs)
+        if iter_objs:
+            results = self._iter(iter_objs, results, **kwargs)
 
         return results
 
-    def batch_process(self, iter_obj, results, **kwargs):
-        for name, module in self.modules[1:]:
-            if self.module_control(name, module, **kwargs):
-                continue
+    def _iter(self, iter_objs, results, **kwargs):
+        try:
+            iter_objs = self._iter_module(iter_objs, **kwargs)
+            self.on_iter_success(iter_objs, **kwargs)
+            results += iter_objs
 
-            iter_obj = module(iter_obj, **kwargs)
-        results += iter_obj
+        except Exception as e:
+            self.on_iter_failure(e, **kwargs)
+            if not self.skip_exception:
+                raise e
+
         return results
 
 
 class MultiProcessModuleSequential(Sequential):
-    """each modules process by multiple processes
+    """modules parallel by multiple processes
     each module will have the same inputs,
     use inplace mode to return the outputs"""
 
     n_pool = None
-    verbose = False
 
     def _iter_module(self, iter_obj, **kwargs):
         from multiprocessing.pool import Pool
@@ -447,7 +530,7 @@ class MultiProcessModuleSequential(Sequential):
 
 
 class MultiProcessDataSequential(Sequential):
-    """each data process by multiple processes"""
+    """data parallel by multiple processes"""
     n_pool = None
 
     def on_process(self, obj, **kwargs):
@@ -466,8 +549,11 @@ class MultiProcessDataSequential(Sequential):
 
         for p in processes:
             try:
-                results.append(p.get())
+                iter_obj = p.get()
+                results.append(iter_obj)
+                self.on_iter_success(iter_obj, **kwargs)
             except Exception as e:
+                self.on_iter_failure(e, **kwargs)
                 if not self.skip_exception:
                     raise e
 
@@ -475,11 +561,10 @@ class MultiProcessDataSequential(Sequential):
 
 
 class MultiThreadModuleSequential(Sequential):
-    """each module processed by multiple threads,
+    """module parallel by multiple threads,
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
-    verbose = False
 
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
@@ -494,9 +579,6 @@ class MultiThreadModuleSequential(Sequential):
 
             threads.append(self.pool.submit(module, iter_obj, **kwargs))
 
-        if self.verbose:
-            threads = tqdm(threads)
-
         for t in threads:
             _iter_obj = t.result()
             if isinstance(_iter_obj, Exception):
@@ -507,9 +589,8 @@ class MultiThreadModuleSequential(Sequential):
 
 
 class MultiThreadDataSequential(Sequential):
-    """each data process by multiple threads"""
+    """data parallel by multiple threads"""
     n_pool = None
-    verbose = False
 
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
@@ -523,13 +604,13 @@ class MultiThreadDataSequential(Sequential):
         for iter_obj in input_module(obj, **kwargs):
             threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
 
-        if self.verbose:
-            threads = tqdm(threads)
-
         for t in threads:
             try:
-                results.append(t.result())
+                iter_obj = t.result()
+                results.append(iter_obj)
+                self.on_iter_success(iter_obj, **kwargs)
             except Exception as e:
+                self.on_iter_failure(e, **kwargs)
                 if not self.skip_exception:
                     raise e
 
@@ -540,7 +621,7 @@ class BaseSequentialInput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
 
-    def on_process(self, objs, *args, **kwargs):
+    def on_process(self, objs: list, **kwargs):
         for obj in objs:
             yield obj
 

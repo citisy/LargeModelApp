@@ -18,15 +18,10 @@ class Module:
             self.on_process_end,
         ]
 
-        if success_callbacks is None:
-            success_callbacks = []
-        if failure_callbacks is None:
-            failure_callbacks = []
-
         self.success_callbacks = []
         self.failure_callbacks = []
-        self.register_success_callbacks(success_callbacks)
-        self.register_failure_callbacks(failure_callbacks)
+        self.register_success_callbacks(success_callbacks or [])
+        self.register_failure_callbacks(failure_callbacks or [])
 
         self.name = type(self).__name__
         self.__dict__.update(kwargs)
@@ -75,9 +70,11 @@ class Module:
             self.on_success(obj, **kwargs)
             return obj
         except Exception as e:
-            self.on_failure(e, **kwargs)
+            obj = self.on_failure(e, **kwargs)
 
-            if not self.ignore_errors:
+            if self.ignore_errors:
+                return obj
+            else:
                 raise e
 
     def on_process_start(self, obj, **kwargs):
@@ -111,8 +108,12 @@ class Module:
         return kwargs.get(k, self.__dict__.get(k))
 
     def set_default_kwargs(self, kwargs: dict):
+        instance_dict = self.__dict__
         for k in log_utils.get_class_annotations(self):
-            kwargs.setdefault(k, self.__dict__.get(k))
+            kwargs.setdefault(k, instance_dict.get(k))
+
+    def __repr__(self):
+        return self.name
 
 
 class BaseServer(Module):
@@ -214,7 +215,7 @@ class ModuleList(Module):
     def __repr__(self):
         s = f'{self.name}(\n'
         for name, module in self.modules:
-            if isinstance(module, (Sequential, Pipeline)):
+            if isinstance(module, ModuleList):
                 name = str(module)
             name = '\n'.join([' ' * 4 + _ for _ in name.split('\n')])
             s += name + '\n'
@@ -224,7 +225,7 @@ class ModuleList(Module):
     def module_info(self):
         s = []
         for name, module in self.modules:
-            if isinstance(module, (Sequential, Pipeline)):
+            if isinstance(module, ModuleList):
                 name = module.module_info()
             s.append(name)
         return {self.__class__.__name__: s}
@@ -252,8 +253,8 @@ class LoopPipeline(Pipeline):
     check_before_loop = True
 
     def on_process(self, obj, **kwargs):
-        counter: Optional[int, dict] = self.gen_counter(obj, **kwargs)   # record the check counter
-        steps: int = 0   # record the loop step
+        counter: Optional[int, dict] = self.gen_counter(obj, **kwargs)  # record the check counter
+        steps: int = 0  # record the loop step
 
         while True:
             # except multiple values error
@@ -375,15 +376,10 @@ class Sequential(ModuleList):
         if force_check and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
 
-        if iter_success_callbacks is None:
-            iter_success_callbacks = []
-        if iter_failure_callbacks is None:
-            iter_failure_callbacks = []
-
         self.iter_success_callbacks = []
         self.iter_failure_callbacks = []
-        self.register_iter_success_callbacks(iter_success_callbacks)
-        self.register_iter_failure_callbacks(iter_failure_callbacks)
+        self.register_iter_success_callbacks(iter_success_callbacks or [])
+        self.register_iter_failure_callbacks(iter_failure_callbacks or [])
 
         super().__init__(*modules, **kwargs)
 

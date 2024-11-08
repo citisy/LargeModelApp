@@ -1,15 +1,21 @@
-import traceback
 from typing import List, Dict, Optional
 
 from utils import log_utils, op_utils
+from .callbacks import CallbackWrapper
 
 
 class Module:
+    # control the module is masked or applied
     mask = False
     apply = True
-    ignore_errors = False
 
-    def __init__(self, logger=None, success_callbacks=None, failure_callbacks=None, **kwargs):
+    callback_wrapper_ins = CallbackWrapper
+    callback_wrapper_kwargs = dict()
+
+    def __init__(self, logger=None, **kwargs):
+        self.name = type(self).__name__
+        self.__dict__.update(kwargs)
+
         self.logger = log_utils.get_logger(logger)
 
         self._nodes = [
@@ -18,90 +24,29 @@ class Module:
             self.on_process_end,
         ]
 
-        self.success_callbacks = []
-        self.failure_callbacks = []
-        self.register_success_callbacks(success_callbacks or [])
-        self.register_failure_callbacks(failure_callbacks or [])
-
-        self.name = type(self).__name__
-        self.__dict__.update(kwargs)
-
-    def register_success_callbacks(self, callbacks):
-        for callback in callbacks:
-            self.register_success_callback(callback)
-
-    def register_success_callback(self, callback):
-        if hasattr(callback, 'name'):
-            name = callback.name
-        else:
-            name = type(callback).__name__
-        self.success_callbacks.append((name, callback))
-
-    def register_failure_callbacks(self, callbacks):
-        for callback in callbacks:
-            self.register_failure_callback(callback)
-
-    def register_failure_callback(self, callback):
-        if hasattr(callback, 'name'):
-            name = callback.name
-        else:
-            name = type(callback).__name__
-        self.failure_callbacks.append((name, callback))
-
-    def initialize_success_callbacks(self, obj, **kwargs):
-        for name, callback in self.success_callbacks:
-            if hasattr(callback, 'init'):
-                callback.init(obj, **kwargs)
-
-    def initialize_failure_callbacks(self, obj, **kwargs):
-        for name, callback in self.failure_callbacks:
-            if hasattr(callback, 'init'):
-                callback.init(obj, **kwargs)
+        self.callback_wrapper = self.callback_wrapper_ins(self._process, **self.callback_wrapper_kwargs)
+        self._process = self.callback_wrapper.__call__
 
     def gen_kwargs(self, obj, **kwargs):
         return kwargs
 
     def __call__(self, obj, **kwargs):
-        try:
-            kwargs = self.gen_kwargs(obj, **kwargs)
-            for node in self._nodes:
-                obj = node(obj, **kwargs)  # noqa
+        return self._process(obj, **kwargs)
 
-            self.on_success(obj, **kwargs)
-            return obj
-        except Exception as e:
-            obj = self.on_failure(e, **kwargs)
+    def _process(self, obj, **kwargs):
+        kwargs = self.gen_kwargs(obj, **kwargs)
+        for node in self._nodes:
+            obj = node(obj, **kwargs)  # noqa
 
-            if self.ignore_errors:
-                return obj
-            else:
-                raise e
+        return obj
 
     def on_process_start(self, obj, **kwargs):
-        self.initialize_success_callbacks(obj, **kwargs)
-        self.initialize_failure_callbacks(obj, **kwargs)
         return obj
 
     def on_process(self, obj, **kwargs):
         return obj
 
     def on_process_end(self, obj, **kwargs):
-        return obj
-
-    def parse_exception(self, e, **kwargs):
-        return e
-
-    def on_failure(self, e, **kwargs):
-        tb_info = str(traceback.format_exc()).rstrip('\n')
-        self.logger.error(tb_info)
-        obj = self.parse_exception(e, **kwargs)
-        for name, callback in self.failure_callbacks:
-            callback(obj, **kwargs)
-        return obj
-
-    def on_success(self, obj, **kwargs):
-        for name, callback in self.success_callbacks:
-            callback(obj, **kwargs)
         return obj
 
     def get_default_kwargs(self, k, kwargs: dict):
@@ -370,82 +315,32 @@ class Sequential(ModuleList):
     if not provided, default creates a new `BaseSequentialInput` module
     """
 
-    skip_exception = False
+    skip_exception_return = False
 
-    def __init__(self, *modules, force_check=True, iter_success_callbacks=None, iter_failure_callbacks=None, **kwargs):
+    iter_callback_wrapper_ins = CallbackWrapper
+    iter_callback_wrapper_kwargs = dict()
+
+    def __init__(self, *modules, force_check=True, **kwargs):
         if force_check and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
 
-        self.iter_success_callbacks = []
-        self.iter_failure_callbacks = []
-        self.register_iter_success_callbacks(iter_success_callbacks or [])
-        self.register_iter_failure_callbacks(iter_failure_callbacks or [])
-
         super().__init__(*modules, **kwargs)
 
-    def register_iter_success_callbacks(self, callbacks):
-        for callback in callbacks:
-            self.register_iter_success_callback(callback)
-
-    def register_iter_success_callback(self, callback):
-        if hasattr(callback, 'name'):
-            name = callback.name
-        else:
-            name = type(callback).__name__
-        self.iter_success_callbacks.append((name, callback))
-
-    def register_iter_failure_callbacks(self, callbacks):
-        for callback in callbacks:
-            self.register_iter_failure_callback(callback)
-
-    def register_iter_failure_callback(self, callback):
-        if hasattr(callback, 'name'):
-            name = callback.name
-        else:
-            name = type(callback).__name__
-        self.iter_failure_callbacks.append((name, callback))
-
-    def initialize_iter_success_callbacks(self, obj, **kwargs):
-        for name, callback in self.iter_success_callbacks:
-            if hasattr(callback, 'init'):
-                callback.init(obj, **kwargs)
-
-    def initialize_iter_failure_callbacks(self, obj, **kwargs):
-        for name, callback in self.iter_failure_callbacks:
-            if hasattr(callback, 'init'):
-                callback.init(obj, **kwargs)
-
-    def on_iter_success(self, obj, **kwargs):
-        for name, callback in self.iter_success_callbacks:
-            callback(obj, **kwargs)
-        return obj
-
-    def on_iter_failure(self, e, **kwargs):
-        tb_info = str(traceback.format_exc()).rstrip('\n')
-        self.logger.error(tb_info)
-        obj = self.parse_exception(e, **kwargs)
-        for name, callback in self.iter_failure_callbacks:
-            callback(obj, **kwargs)
-        return obj
-
-    def on_process_start(self, obj, **kwargs):
-        self.initialize_iter_success_callbacks(obj, **kwargs)
-        self.initialize_iter_failure_callbacks(obj, **kwargs)
-        return super().on_process_start(obj, **kwargs)
+        self.iter_callback_wrapper = self.iter_callback_wrapper_ins(self._iter_result, **self.iter_callback_wrapper_kwargs)
+        self._iter_result = self.iter_callback_wrapper.__call__
 
     def on_process(self, obj, **kwargs):
         _, input_module = self.modules[0]
         results = []
         for iter_obj in input_module(obj, **kwargs):
-            try:
-                iter_obj = self._iter_module(iter_obj, **kwargs)
-                self.on_iter_success(iter_obj, **kwargs)
-            except Exception as e:
-                self.on_iter_failure(e, **kwargs)
-                if not self.skip_exception:
-                    raise e
+            iter_obj = self._iter_result(iter_obj, **kwargs)
+            if self.skip_exception_return and isinstance(iter_obj, Exception):
+                continue
             results.append(iter_obj)
         return results
+
+    def _iter_result(self, iter_obj, **kwargs):
+        return self._iter_module(iter_obj, **kwargs)
 
     def _iter_module(self, iter_obj, **kwargs):
         for name, module in self.modules[1:]:
@@ -478,25 +373,18 @@ class BatchSequential(Sequential):
             if i < self.batch_size:
                 continue
 
-            results = self._iter(iter_objs, results, **kwargs)
+            _iter_objs = self._iter_result(iter_objs, **kwargs)
+
+            if not (self.skip_exception_return and isinstance(_iter_objs, Exception)):
+                results += _iter_objs
+
             i = 0
             iter_objs = []
 
         if iter_objs:
-            results = self._iter(iter_objs, results, **kwargs)
-
-        return results
-
-    def _iter(self, iter_objs, results, **kwargs):
-        try:
-            iter_objs = self._iter_module(iter_objs, **kwargs)
-            self.on_iter_success(iter_objs, **kwargs)
-            results += iter_objs
-
-        except Exception as e:
-            self.on_iter_failure(e, **kwargs)
-            if not self.skip_exception:
-                raise e
+            _iter_objs = self._iter_result(iter_objs, **kwargs)
+            if not (self.skip_exception_return and isinstance(_iter_objs, Exception)):
+                results += _iter_objs
 
         return results
 
@@ -504,7 +392,8 @@ class BatchSequential(Sequential):
 class MultiProcessModuleSequential(Sequential):
     """modules parallel by multiple processes
     each module will have the same inputs,
-    use inplace mode to return the outputs"""
+    note, only return the outputs by the inplace mode,
+    and can not catch exceptions"""
 
     n_pool = None
 
@@ -535,7 +424,6 @@ class MultiProcessDataSequential(Sequential):
         pool = Pool(self.n_pool)
 
         _, input_module = self.modules[0]
-        results = []
         processes = []
         for iter_obj in input_module(obj, **kwargs):
             processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
@@ -543,17 +431,17 @@ class MultiProcessDataSequential(Sequential):
         pool.close()
         pool.join()
 
+        results = []
         for p in processes:
-            try:
-                iter_obj = p.get()
-                results.append(iter_obj)
-                self.on_iter_success(iter_obj, **kwargs)
-            except Exception as e:
-                self.on_iter_failure(e, **kwargs)
-                if not self.skip_exception:
-                    raise e
+            iter_obj = self._iter_result(p, **kwargs)
+            if self.skip_exception_return and isinstance(iter_obj, Exception):
+                continue
+            results.append(iter_obj)
 
         return results
+
+    def _iter_result(self, p, **kwargs):
+        return p.get()
 
 
 class MultiThreadModuleSequential(Sequential):
@@ -601,16 +489,15 @@ class MultiThreadDataSequential(Sequential):
             threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
 
         for t in threads:
-            try:
-                iter_obj = t.result()
-                results.append(iter_obj)
-                self.on_iter_success(iter_obj, **kwargs)
-            except Exception as e:
-                self.on_iter_failure(e, **kwargs)
-                if not self.skip_exception:
-                    raise e
+            iter_obj = self._iter_result(t, **kwargs)
+            if self.skip_exception_return and isinstance(iter_obj, Exception):
+                continue
+            results.append(iter_obj)
 
         return results
+
+    def _iter_result(self, t, **kwargs):
+        return t.result()
 
 
 class BaseSequentialInput(Module):

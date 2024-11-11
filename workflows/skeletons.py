@@ -24,8 +24,10 @@ class Module:
             self.on_process_end,
         ]
 
-        self.callback_wrapper = self.callback_wrapper_ins(self._process, **self.callback_wrapper_kwargs)
-        self._process = self.callback_wrapper.__call__
+        # note, not necessary to use judgment statements, but for the convenience of debugging
+        if self.callback_wrapper_kwargs:
+            self.callback_wrapper = self.callback_wrapper_ins(**self.callback_wrapper_kwargs)
+            self._process = self.callback_wrapper.process_wrap(self._process)
 
     def gen_kwargs(self, obj, **kwargs):
         return kwargs
@@ -326,10 +328,16 @@ class Sequential(ModuleList):
 
         super().__init__(*modules, **kwargs)
 
-        self.iter_callback_wrapper = self.iter_callback_wrapper_ins(self._iter_result, **self.iter_callback_wrapper_kwargs)
-        self._iter_result = self.iter_callback_wrapper.__call__
+        # note, not necessary to use judgment statements, but for the convenience of debugging
+        if self.iter_callback_wrapper_kwargs:
+            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
+            self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
+            self._iter = self.iter_callback_wrapper.on_process_start_end_wrap(self._iter)
 
     def on_process(self, obj, **kwargs):
+        return self._iter(obj, **kwargs)
+
+    def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
         results = []
         for iter_obj in input_module(obj, **kwargs):
@@ -361,7 +369,7 @@ class BatchSequential(Sequential):
 
     batch_size = 1
 
-    def on_process(self, obj, mask_modules=(), **kwargs):
+    def _iter(self, obj, mask_modules=(), **kwargs):
         _, input_module = self.modules[0]
         results = []
         i = 0
@@ -418,7 +426,7 @@ class MultiProcessDataSequential(Sequential):
     """data parallel by multiple processes"""
     n_pool = None
 
-    def on_process(self, obj, **kwargs):
+    def _iter(self, obj, **kwargs):
         from multiprocessing.pool import Pool
 
         pool = Pool(self.n_pool)
@@ -481,7 +489,7 @@ class MultiThreadDataSequential(Sequential):
         from concurrent.futures import ThreadPoolExecutor
         self.pool = ThreadPoolExecutor(max_workers=self.n_pool)
 
-    def on_process(self, obj, **kwargs):
+    def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
         results = []
         threads = []

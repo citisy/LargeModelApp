@@ -26,8 +26,26 @@ class Module:
 
         # note, not necessary to use judgment statements, but for the convenience of debugging
         if self.callback_wrapper_kwargs:
-            self.callback_wrapper = self.callback_wrapper_ins(**self.callback_wrapper_kwargs)
-            self._process = self.callback_wrapper.process_wrap(self._process)
+            self.add_callback()
+
+    def add_callback(self):
+        self.callback_wrapper = self.callback_wrapper_ins(**self.callback_wrapper_kwargs)
+        self._process = self.callback_wrapper.process_wrap(self._process)
+
+    @property
+    def ignore_errors(self):
+        if hasattr(self, 'callback_wrapper'):
+            return self.callback_wrapper.ignore_errors
+        else:
+            return False
+
+    @ignore_errors.setter
+    def ignore_errors(self, ignore):
+        if hasattr(self, 'callback_wrapper'):
+            self.callback_wrapper.ignore_errors = ignore
+        elif ignore:
+            self.add_callback()
+            self.callback_wrapper.ignore_errors = ignore
 
     def gen_kwargs(self, obj, **kwargs):
         return kwargs
@@ -330,9 +348,30 @@ class Sequential(ModuleList):
 
         # note, not necessary to use judgment statements, but for the convenience of debugging
         if self.iter_callback_wrapper_kwargs:
-            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
-            self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
-            self._iter = self.iter_callback_wrapper.on_process_start_end_wrap(self._iter)
+            self.add_iter_callback()
+
+    def add_iter_callback(self):
+        self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
+        self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
+        self._iter = self.iter_callback_wrapper.on_process_start_end_wrap(self._iter)
+
+    @property
+    def ignore_iter_errors(self):
+        if hasattr(self, 'iter_callback_wrapper'):
+            return self.iter_callback_wrapper.ignore_errors
+        else:
+            return False
+
+    @ignore_iter_errors.setter
+    def ignore_iter_errors(self, ignore):
+        if hasattr(self, 'iter_callback_wrapper'):
+            self.iter_callback_wrapper.ignore_errors = ignore
+        elif ignore:
+            self.add_iter_callback()
+            self.iter_callback_wrapper.ignore_errors = ignore
+
+    def ignore_iter_errors_(self, ignore=True):
+        self.apply_setting(ignore, 'ignore_iter_errors', 'ignore_iter_errors_')
 
     def on_process(self, obj, **kwargs):
         return self._iter(obj, **kwargs)

@@ -81,6 +81,79 @@ class Module:
         return self.name
 
 
+class LoopModule(Module):
+    """
+    Usages:
+        class Print(LoopModule):
+            def check(self, obj, counter=None, steps=0, **kwargs):
+                return counter < obj
+
+            def on_process(self, obj, counter=None, **kwargs):
+                print(counter)
+                return obj
+
+        loop = Print()
+        loop(10)    # run 10 times
+    """
+    check_before_loop = True
+
+    def _process(self, obj, **kwargs):
+        counter: Optional[int | dict] = self.gen_counter(obj, **kwargs)  # record the check counter
+        steps: int = 0  # record the loop step
+
+        while True:
+            # except multiple values error
+            kwargs.update(counter=counter, steps=steps)
+
+            if self.check_before_loop and not self.check(obj, **kwargs):
+                break
+
+            obj = super()._process(obj, **kwargs)
+            counter = self.update_counter(obj, **kwargs)
+
+            # except multiple values error
+            kwargs.update(counter=counter, steps=steps)
+
+            if not self.check_before_loop and not self.check(obj, **kwargs):
+                break
+
+            steps += 1
+
+        return obj
+
+    def check(self, obj, counter=None, steps=0, **kwargs) -> bool:
+        """False to break the loop"""
+        raise NotImplemented
+
+    def gen_counter(self, obj, **kwargs) -> Optional[int | dict]:
+        return 0
+
+    def update_counter(self, obj, counter=0, **kwargs) -> Optional[int | dict]:
+        return counter + 1
+
+
+class RetryModule(Module):
+    """
+    Usages:
+        class E(RetryModule):
+            def on_process(self, obj, **kwargs):
+                raise ValueError(obj)
+
+        module = E()
+        module(0)
+    """
+
+    retry_count = 3
+    retry_wait = 15
+    err_type = Exception
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        i = self._nodes.index(self.on_process)
+        self.retry = op_utils.Retry(stdout_method=self.logger.info, count=self.retry_count, wait=self.retry_wait)
+        self._nodes[i] = self.retry.add_try(err_type=self.err_type)(self._nodes[i])
+
+
 class BaseServer(Module):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -214,60 +287,81 @@ class Pipeline(ModuleList):
         return obj
 
 
-class LoopPipeline(Pipeline):
-    check_before_loop = True
+class LoopPipeline(Pipeline, LoopModule):
+    """
+    Usages:
+        class MyLoop(LoopPipeline):
+            def check(self, obj, counter=None, steps=0, **kwargs):
+                return counter < obj
 
-    def on_process(self, obj, **kwargs):
-        counter: Optional[int, dict] = self.gen_counter(obj, **kwargs)  # record the check counter
-        steps: int = 0  # record the loop step
+        class Print(Module):
+            def on_process(self, obj, counter=None, **kwargs):
+                print(counter)
+                return obj
 
-        while True:
-            # except multiple values error
-            kwargs.update(counter=counter, steps=steps)
-
-            if self.check_before_loop and not self.check(obj, **kwargs):
-                break
-
-            obj = super().on_process(obj, **kwargs)
-            counter = self.update_counter(obj, **kwargs)
-
-            # except multiple values error
-            kwargs.update(counter=counter, steps=steps)
-
-            if not self.check_before_loop and not self.check(obj, **kwargs):
-                break
-
-            steps += 1
-
-        return obj
-
-    def check(self, obj, counter=None, steps=0, **kwargs):
-        """False to break the loop"""
-        raise NotImplemented
-
-    def gen_counter(self, obj, **kwargs):
-        return 0
-
-    def update_counter(self, obj, counter=0, **kwargs):
-        return counter + 1
+        pipe = MyLoop(
+            Print()
+        )
+        pipe(10)    # run 10 times
+    """
 
 
-class RetryPipeline(Pipeline):
-    count = 3
-    wait = 15
-    err_type = Exception
+class RetryPipeline(Pipeline, RetryModule):
+    """
+    Usages:
+        class E(Module):
+            def on_process(self, obj, **kwargs):
+                raise ValueError(obj)
 
-    def __init__(self, *modules, **kwargs):
-        super().__init__(*modules, **kwargs)
-        i = self._nodes.index(self.on_process)
-        self._nodes[i] = op_utils.Retry(stdout_method=self.logger.info, count=self.count, wait=self.wait).add_try(err_type=self.err_type)(self._nodes[i])
+        pipe = RetryPipeline(
+            E()
+        )
+        pipe(0)
+    """
 
 
 class SwitchPipeline(Pipeline):
-    def on_process(self, obj, **kwargs):
-        raise NotImplemented
+    """
+    Usages:
+        class A(Module):
+            def on_process(self, obj, **kwargs):
+                print('A')
+                return obj
 
-    def switch(self, obj, **kwargs):
+        class B(Module):
+            def on_process(self, obj, **kwargs):
+                print('B')
+                return obj
+
+        class C(Module):
+            def on_process(self, obj, **kwargs):
+                print('C')
+                return obj
+
+        class MySwitch(SwitchPipeline):
+            def switch(self, obj, **kwargs) -> str:
+                return obj
+
+        pipe = MySwitch(
+            A(),
+            B(),
+            C()
+        )
+
+        pipe('B')
+    """
+    def on_process(self, obj, **kwargs):
+        name = self.switch(obj, **kwargs)
+        module = self.get_module(name)
+        obj = module(obj, **kwargs)
+
+        if isinstance(obj, Exception):
+            raise obj
+
+        return obj
+
+    def switch(self, obj, **kwargs) -> str:
+        """return the name of selected module"""
         raise NotImplemented
 
 

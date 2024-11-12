@@ -27,7 +27,7 @@ class Module:
 
 class CallbackWrapper:
     """
-    Usage:
+    Usages:
         # example 1
         # print the obj
         wrapper = CallbackWrapper(
@@ -94,22 +94,15 @@ class CallbackWrapper:
         self.failure_callbacks.append((name, callback))
 
     def process_wrap(self, func):
-        def wrapper(obj, **kwargs):
-            _func = self.on_process_start_wrap(func)
-            _func = self.on_process_wrap(_func)
-            _func = self.on_process_end_wrap(_func)
-
-            return _func(obj, **kwargs)
-
-        return wrapper
+        _func = self.on_process_start_wrap(func)
+        _func = self.on_process_wrap(_func)
+        _func = self.on_process_end_wrap(_func)
+        return _func
 
     def on_process_start_end_wrap(self, func):
-        def wrapper(obj, **kwargs):
-            _func = self.on_process_start_wrap(func)
-            _func = self.on_process_end_wrap(_func)
-            return _func(obj, **kwargs)
-
-        return wrapper
+        _func = self.on_process_start_wrap(func)
+        _func = self.on_process_end_wrap(_func)
+        return _func
 
     def on_process_start_wrap(self, func):
         return partial(self.on_process_start, func)
@@ -194,8 +187,9 @@ class StdErrCallback(Module):
 
 
 class TqdmVisCallback(Module):
-    """
-    Usage:
+    """note, can not use for `MultiProcessDataSequential`
+
+    Usages:
         # use in workflow
         Sequential(
             ...,

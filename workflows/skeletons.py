@@ -532,9 +532,8 @@ class BatchSequential(Sequential):
 
 class MultiProcessModuleSequential(Sequential):
     """modules parallel by multiple processes
-    each module will have the same inputs,
-    note, only return the outputs by the inplace mode,
-    and can not catch exceptions"""
+    each module will have the same inputs
+    """
 
     n_pool = None
 
@@ -542,17 +541,28 @@ class MultiProcessModuleSequential(Sequential):
         from multiprocessing.pool import Pool
 
         pool = Pool(self.n_pool)
+        processes = {}
         for name, module in self.modules[1:]:
             if self.module_control(name, module, **kwargs):
                 continue
 
-            pool.apply_async(module, args=(iter_obj,), kwds=kwargs)
+            processes[name] = pool.apply_async(module, args=(iter_obj,), kwds=kwargs)
 
         pool.close()
         pool.join()
 
-        # inplace mode to return the outputs
-        return iter_obj
+        results = {}
+        for name, p in processes.items():
+            iter_obj = p.get()
+            if self.skip_exception_return and isinstance(iter_obj, Exception):
+                continue
+            results[name] = iter_obj
+
+        return self.merge_outputs(results, **kwargs)
+
+    def merge_outputs(self, results: dict, **kwargs):
+        """merge multi-process modules' returns"""
+        raise NotImplemented
 
 
 class MultiProcessDataSequential(Sequential):

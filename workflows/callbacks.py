@@ -1,10 +1,11 @@
+import time
 import traceback
 from functools import partial
 from typing import Optional, List
 
 from tqdm import tqdm
 
-from utils import log_utils
+from utils import log_utils, os_lib
 
 
 class Module:
@@ -212,3 +213,52 @@ class TqdmVisCallback(Module):
 
     def on_process_end(self, obj, **kwargs):
         self.pbar.close()
+
+
+class TimeLoggerCallback(Module):
+    def __init__(self, logger=None):
+        super().__init__()
+        self.logger = log_utils.get_logger(logger)
+
+    def on_process_start(self, obj, **kwargs) -> None:
+        # todo, do not support for multi-threading.
+        self.start_time = time.time()
+
+    def on_process_end(self, obj, **kwargs) -> None:
+        self.logger.info(f'Takes {time.time() - self.start_time:.2f} s')
+
+
+class FileCacherCallback(Module):
+    """cache input and output to file"""
+    def __init__(
+            self, save_dir,
+            cache_inputs=True, cache_outputs=True,
+            save_input_keys=None, save_output_keys=None,
+            **cacher_kwargs
+    ):
+        super().__init__()
+        self.cacher = os_lib.FileCacher(save_dir, **cacher_kwargs)
+        self.cache_inputs = cache_inputs
+        self.cache_outputs = cache_outputs
+        self.save_input_keys = save_input_keys
+        self.save_output_keys = save_output_keys
+
+    def on_process_start(self, obj, task_id=None, **kwargs) -> None:
+        if not self.cache_inputs:
+            return
+
+        if self.save_input_keys:
+            assert isinstance(obj, dict), 'Only dict obj support keys filter, or set `save_input_keys=None`'
+            obj = {k: v for k, v in obj.items() if k in self.save_input_keys}
+
+        self.cacher.cache_one(obj, file_stem=f'{task_id}.input')
+
+    def on_process_end(self, obj, task_id=None, **kwargs) -> None:
+        if not self.cache_outputs:
+            return
+
+        if self.save_output_keys:
+            assert isinstance(obj, dict), 'Only dict obj support keys filter, or set `save_output_keys=None`'
+            obj = {k: v for k, v in obj.items() if k in self.save_output_keys}
+
+        self.cacher.cache_one(obj, file_stem=f'{task_id}.output')

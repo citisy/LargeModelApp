@@ -40,7 +40,8 @@ class CallbackWrapper:
         def func(obj, **kwargs):
             return obj
 
-        func(10)
+        wrapper_kwargs = wrapper.gen_kwargs(None)
+        func(10, **wrapper_kwargs)
 
         # example 2
         # visualize the pbar
@@ -59,7 +60,8 @@ class CallbackWrapper:
             time.sleep(random.random())
             return obj
 
-        fun1(10)
+        wrapper_kwargs = wrapper.gen_kwargs(None)
+        fun1(10, **wrapper_kwargs)
     """
     ignore_errors = False
 
@@ -93,6 +95,11 @@ class CallbackWrapper:
         else:
             name = type(callback).__name__
         self.failure_callbacks.append((name, callback))
+
+    def gen_kwargs(self, obj, **kwargs):
+        return dict(
+            callback_status={name: None for name, _ in self.success_callbacks + self.failure_callbacks}
+        )
 
     def process_wrap(self, func):
         _func = self.on_process_start_wrap(func)
@@ -204,15 +211,15 @@ class TqdmVisCallback(Module):
 
     pbar: Optional
 
-    def on_process_start(self, obj, **kwargs):
+    def on_process_start(self, obj, callback_status={}, **kwargs):
         # set a very small delay to avoid printing the pbar when initialization
-        self.pbar = tqdm(delay=1e-9)
+        callback_status[self.name] = tqdm(delay=1e-9)
 
-    def on_process(self, obj: dict, **kwargs):
-        self.pbar.update()
+    def on_process(self, obj: dict, callback_status={}, **kwargs):
+        callback_status[self.name].update()
 
-    def on_process_end(self, obj, **kwargs):
-        self.pbar.close()
+    def on_process_end(self, obj, callback_status={}, **kwargs):
+        callback_status[self.name].close()
 
 
 class TimeLoggerCallback(Module):
@@ -220,16 +227,18 @@ class TimeLoggerCallback(Module):
         super().__init__()
         self.logger = log_utils.get_logger(logger)
 
-    def on_process_start(self, obj, **kwargs) -> None:
-        # todo, do not support for multi-threading.
-        self.start_time = time.time()
+    def on_process_start(self, obj, callback_status={}, **kwargs) -> None:
+        callback_status[self.name] = time.time()
 
-    def on_process_end(self, obj, **kwargs) -> None:
-        self.logger.info(f'Takes {time.time() - self.start_time:.2f} s')
+    def on_process_end(self, obj, callback_status={}, **kwargs) -> None:
+        st = callback_status[self.name]
+        et = time.time()
+        self.logger.info(f'Takes {et - st:.2f} s')
 
 
 class FileCacherCallback(Module):
     """cache input and output to file"""
+
     def __init__(
             self, save_dir,
             cache_inputs=True, cache_outputs=True,

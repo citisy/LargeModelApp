@@ -1,18 +1,18 @@
 from typing import List, Dict, Optional
 
-from utils import log_utils, op_utils
+from utils import log_utils, op_utils, configs
 from .callbacks import CallbackWrapper
 
 
 class Module:
     # control the module is masked or applied
-    mask = False
+    mask = False    # this value will not be changed usually, unless want to mask module forever
     apply = True
 
     callback_wrapper_ins = CallbackWrapper
     callback_wrapper_kwargs = dict()
 
-    def __init__(self, logger=None, **kwargs):
+    def __init__(self, logger=None, success_callbacks=None, failure_callbacks=None, **kwargs):
         self.name = type(self).__name__
         self.__dict__.update(kwargs)
 
@@ -23,6 +23,12 @@ class Module:
             self.on_process,
             self.on_process_end,
         ]
+
+        if success_callbacks:
+            self.callback_wrapper_kwargs = configs.ConfigObjParse.merge_dict(self.callback_wrapper_kwargs, dict(success_callbacks=success_callbacks))
+
+        if failure_callbacks:
+            self.callback_wrapper_kwargs = configs.ConfigObjParse.merge_dict(self.callback_wrapper_kwargs, dict(failure_callbacks=failure_callbacks))
 
         # note, not necessary to use judgment statements, but for the convenience of debugging
         if self.callback_wrapper_kwargs:
@@ -51,10 +57,13 @@ class Module:
         return kwargs
 
     def __call__(self, obj, **kwargs):
+        # todo, `gen_kwargs` does not be wrapped in callback
+        kwargs = self.gen_kwargs(obj, **kwargs)
+        if hasattr(self, 'callback_wrapper'):
+            kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
         return self._process(obj, **kwargs)
 
     def _process(self, obj, **kwargs):
-        kwargs = self.gen_kwargs(obj, **kwargs)
         for node in self._nodes:
             obj = node(obj, **kwargs)  # noqa
 
@@ -69,13 +78,12 @@ class Module:
     def on_process_end(self, obj, **kwargs):
         return obj
 
-    def get_default_kwargs(self, k, kwargs: dict):
-        return kwargs.get(k, self.__dict__.get(k))
+    def get_default_kwargs(self, k, kwargs: dict, default=None):
+        return kwargs.get(k, getattr(self, k, default))
 
-    def set_default_kwargs(self, kwargs: dict):
-        instance_dict = self.__dict__
+    def set_default_kwargs(self, kwargs: dict, default=None):
         for k in log_utils.get_class_annotations(self):
-            kwargs.setdefault(k, instance_dict.get(k))
+            kwargs.setdefault(k, getattr(self, k, default))
 
     def __repr__(self):
         return self.name

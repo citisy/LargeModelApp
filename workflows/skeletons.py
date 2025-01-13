@@ -6,14 +6,20 @@ from .callbacks import CallbackWrapper
 
 class Module:
     # control the module is masked or applied
-    mask = False    # this value will not be changed usually, unless want to mask module forever
+    mask = False  # this value will not be changed usually, unless want to mask the module forever
     apply = True
+    allow_start = False  # allow the module to be started in a workflow or not
+    allow_end = False  # allow the module to be ended in a workflow or not
 
     callback_wrapper_ins = CallbackWrapper
     callback_wrapper_kwargs = dict()
 
+    name: str
+
     def __init__(self, logger=None, success_callbacks=None, failure_callbacks=None, **kwargs):
-        self.name = type(self).__name__
+        if not hasattr(self, 'name'):
+            self.name = type(self).__name__
+
         self.__dict__.update(kwargs)
 
         self.logger = log_utils.get_logger(logger)
@@ -35,7 +41,7 @@ class Module:
             self.add_callback()
 
     def add_callback(self):
-        self.callback_wrapper = self.callback_wrapper_ins(**self.callback_wrapper_kwargs)
+        self.callback_wrapper = self.callback_wrapper_ins(module_name=self.name, **self.callback_wrapper_kwargs)
         self._process = self.callback_wrapper.process_wrap(self._process)
 
     @property
@@ -84,6 +90,16 @@ class Module:
     def set_default_kwargs(self, kwargs: dict, default=None):
         for k in log_utils.get_class_annotations(self):
             kwargs.setdefault(k, getattr(self, k, default))
+
+    def module_info(self):
+        return dict(
+            name=self.name,
+            comments=self.__doc__,
+            apply=self.apply,
+            mask=self.mask,
+            allow_start=self.allow_start,
+            allow_end=self.allow_end,
+        )
 
     def __repr__(self):
         return self.name
@@ -215,7 +231,7 @@ class ModuleList(Module):
             if _name == name:
                 return module
 
-    def module_control(self, name, module, mask_modules=(), apply_modules=(), **kwargs):
+    def module_control(self, name, module, mask_modules=(), apply_modules=(), start_module=None, end_module=None, **kwargs):
         """control the module is masked or applied,
         return `Ture` to mask module, `False` to apply module
         """
@@ -226,6 +242,21 @@ class ModuleList(Module):
         # ignore `apply_modules` when `module.apply=False`
         if not (getattr(module, 'apply', True) or name in apply_modules):
             return True
+
+        start, end = 0, len(self.modules)
+        for i, (_name, module) in enumerate(self.modules):
+            if module.allow_start and _name == start_module:
+                start = i
+
+            if module.allow_end and _name == end_module:
+                end = i + 1
+
+        mask_flag = [True] * len(self.modules)
+        mask_flag[start:end] = [False] * (end - start)
+
+        for i, (_name, module) in enumerate(self.modules):
+            if _name == name and mask_flag[i]:
+                return True
 
         return False
 
@@ -271,10 +302,11 @@ class ModuleList(Module):
     def module_info(self):
         s = []
         for name, module in self.modules:
-            if isinstance(module, ModuleList):
-                name = module.module_info()
-            s.append(name)
-        return {self.__class__.__name__: s}
+            info = module.module_info()
+            s.append(info)
+        info = super().module_info()
+        info['modules'] = s
+        return info
 
 
 class Pipeline(ModuleList):
@@ -358,9 +390,11 @@ class SwitchPipeline(Pipeline):
 
         pipe('B')
     """
+
     def on_process(self, obj, **kwargs):
         name = self.switch(obj, **kwargs)
         module = self.get_module(name)
+        assert module is not None, f'{name} is not found in {self.modules}'
         obj = module(obj, **kwargs)
 
         if isinstance(obj, Exception):
@@ -438,13 +472,17 @@ class Sequential(ModuleList):
     """
 
     skip_exception_return = False
+    cache_all_results = True
 
     iter_callback_wrapper_ins = CallbackWrapper
     iter_callback_wrapper_kwargs = dict()
 
-    def __init__(self, *modules, force_check=True, **kwargs):
-        if force_check and not isinstance(modules[0], BaseSequentialInput):
+    def __init__(self, *modules, force_add_input=True, force_add_output=True, **kwargs):
+        if force_add_input and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
+
+        if force_add_output and not isinstance(modules[-1], BaseSequentialOutput):
+            modules = list(modules) + [BaseSequentialOutput()]
 
         super().__init__(*modules, **kwargs)
 
@@ -480,19 +518,22 @@ class Sequential(ModuleList):
 
     def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
+        _, output_module = self.modules[-1]
         results = []
         for iter_obj in input_module(obj, **kwargs):
             iter_obj = self._iter_result(iter_obj, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
                 continue
-            results.append(iter_obj)
-        return results
+            if self.cache_all_results:
+                results.append(iter_obj)
+
+        return output_module(results, raw_obj=obj, **kwargs)
 
     def _iter_result(self, iter_obj, **kwargs):
         return self._iter_module(iter_obj, **kwargs)
 
     def _iter_module(self, iter_obj, **kwargs):
-        for name, module in self.modules[1:]:
+        for name, module in self.modules[1:-1]:
             if self.module_control(name, module, **kwargs):
                 continue
 
@@ -512,6 +553,7 @@ class BatchSequential(Sequential):
 
     def _iter(self, obj, mask_modules=(), **kwargs):
         _, input_module = self.modules[0]
+        _, output_module = self.modules[-1]
         results = []
         i = 0
         iter_objs = []
@@ -524,7 +566,7 @@ class BatchSequential(Sequential):
 
             _iter_objs = self._iter_result(iter_objs, **kwargs)
 
-            if not (self.skip_exception_return and isinstance(_iter_objs, Exception)):
+            if not (self.skip_exception_return and isinstance(_iter_objs, Exception)) and self.cache_all_results:
                 results += _iter_objs
 
             i = 0
@@ -532,10 +574,10 @@ class BatchSequential(Sequential):
 
         if iter_objs:
             _iter_objs = self._iter_result(iter_objs, **kwargs)
-            if not (self.skip_exception_return and isinstance(_iter_objs, Exception)):
+            if not (self.skip_exception_return and isinstance(_iter_objs, Exception)) and self.cache_all_results:
                 results += _iter_objs
 
-        return results
+        return output_module(results, raw_obj=obj, **kwargs)
 
 
 class MultiProcessModuleSequential(Sequential):
@@ -550,7 +592,7 @@ class MultiProcessModuleSequential(Sequential):
 
         pool = Pool(self.n_pool)
         processes = {}
-        for name, module in self.modules[1:]:
+        for name, module in self.modules[1:-1]:
             if self.module_control(name, module, **kwargs):
                 continue
 
@@ -583,21 +625,38 @@ class MultiProcessDataSequential(Sequential):
         pool = Pool(self.n_pool)
 
         _, input_module = self.modules[0]
+        _, output_module = self.modules[-1]
         processes = []
+        results = []
         for iter_obj in input_module(obj, **kwargs):
             processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
+            results.append(None)
+
+            self.checkout_iter_results(processes, results, on_process=True, **kwargs)
 
         pool.close()
         pool.join()
 
-        results = []
-        for p in processes:
+        self.checkout_iter_results(processes, results, on_process=False, **kwargs)
+
+        return output_module(results, raw_obj=obj, **kwargs)
+
+    def checkout_iter_results(self, processes, results, on_process=True, **kwargs):
+        for i, p in enumerate(processes):
+            if p is None:
+                continue
+
+            # only when on_process, running the following scripts after the process is finished
+            if on_process and not p._success:
+                continue
+
+            processes[i] = None
             iter_obj = self._iter_result(p, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
                 continue
-            results.append(iter_obj)
 
-        return results
+            if self.cache_all_results:
+                results[i] = iter_obj
 
     def _iter_result(self, p, **kwargs):
         return p.get()
@@ -616,7 +675,7 @@ class MultiThreadModuleSequential(Sequential):
 
     def _iter_module(self, iter_obj, **kwargs):
         threads = []
-        for name, module in self.modules[1:]:
+        for name, module in self.modules[1:-1]:
             if self.module_control(name, module, **kwargs):
                 continue
 
@@ -642,18 +701,34 @@ class MultiThreadDataSequential(Sequential):
 
     def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
+        _, output_module = self.modules[-1]
         results = []
         threads = []
         for iter_obj in input_module(obj, **kwargs):
             threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
+            results.append(None)
 
-        for t in threads:
+            self.checkout_iter_results(threads, results, on_process=True, **kwargs)
+
+        self.checkout_iter_results(threads, results, on_process=False, **kwargs)
+        return output_module(results, raw_obj=obj, **kwargs)
+
+    def checkout_iter_results(self, threads, results, on_process=True, **kwargs):
+        for i, t in enumerate(threads):
+            if t is None:
+                continue
+
+            # only when on_process, running the following scripts after the thread is finished
+            if on_process and t._state != 'FINISHED':
+                continue
+
+            threads[i] = None
             iter_obj = self._iter_result(t, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
                 continue
-            results.append(iter_obj)
 
-        return results
+            if self.cache_all_results:
+                results[i] = iter_obj
 
     def _iter_result(self, t, **kwargs):
         return t.result()
@@ -666,6 +741,14 @@ class BaseSequentialInput(Module):
     def on_process(self, objs: list, **kwargs):
         for obj in objs:
             yield obj
+
+
+class BaseSequentialOutput(Module):
+    """default input module for Sequential
+    do nothing, just return an iterable obj"""
+
+    def on_process(self, objs: list, **kwargs):
+        return objs
 
 
 class DictSequentialInput(BaseSequentialInput):

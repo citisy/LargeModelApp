@@ -33,8 +33,8 @@ class CallbackWrapper:
         # print the obj
         wrapper = CallbackWrapper(
             success_callbacks=[
-                StdOutCallback(FakeLogger()),
-            ])
+                StdOutCallback(FakeLogger())
+        ])
 
         @wrapper.process_wrap
         def func(obj, **kwargs):
@@ -65,13 +65,14 @@ class CallbackWrapper:
     """
     ignore_errors = False
 
-    def __init__(self, success_callbacks=None, failure_callbacks=None, **kwargs):
+    def __init__(self, success_callbacks=None, failure_callbacks=None, module_name=None, **kwargs):
         self.success_callbacks = []
         self.failure_callbacks = []
         self.register_success_callbacks(success_callbacks or [])
         self.register_failure_callbacks(failure_callbacks or [])
 
         self.name = type(self).__name__
+        self.module_name = module_name
         self.__dict__.update(kwargs)
 
     def register_success_callbacks(self, callbacks: List[Module]):
@@ -118,11 +119,11 @@ class CallbackWrapper:
     def on_process_start(self, func, obj, **kwargs):
         for name, callback in self.success_callbacks:
             if hasattr(callback, 'on_process_start'):
-                callback.on_process_start(obj, **kwargs)
+                callback.on_process_start(obj, module_name=self.module_name, **kwargs)
 
         for name, callback in self.failure_callbacks:
             if hasattr(callback, 'on_process_start'):
-                callback.on_process_start(obj, **kwargs)
+                callback.on_process_start(obj, module_name=self.module_name, **kwargs)
 
         return func(obj, **kwargs)
 
@@ -136,7 +137,7 @@ class CallbackWrapper:
             self.on_success(obj, **kwargs)
             return obj
         except Exception as e:
-            obj = self.on_failure(e, **kwargs)
+            obj = self.on_failure(e, obj, **kwargs)
 
             if self.ignore_errors:
                 return obj
@@ -151,27 +152,27 @@ class CallbackWrapper:
 
         for name, callback in self.success_callbacks:
             if hasattr(callback, 'on_process_end'):
-                callback.on_process_end(obj, **kwargs)
+                callback.on_process_end(obj, module_name=self.module_name, **kwargs)
 
         for name, callback in self.failure_callbacks:
             if hasattr(callback, 'on_process_end'):
-                callback.on_process_end(obj, **kwargs)
+                callback.on_process_end(obj, module_name=self.module_name, **kwargs)
 
         return obj
 
-    def on_failure(self, e: Exception, **kwargs):
-        obj = self.parse_exception(e, **kwargs)
+    def on_failure(self, e: Exception, obj, **kwargs):
+        parse_obj = self.parse_exception(e, obj, **kwargs)
         for name, callback in self.failure_callbacks:
-            callback(obj, **kwargs)
-        return obj
+            callback(obj, e=e, parse_obj=parse_obj, module_name=self.module_name, **kwargs)
+        return parse_obj
 
-    def parse_exception(self, e: Exception, **kwargs):
+    def parse_exception(self, e: Exception, obj, *args, **kwargs):
         """return something specially to transfer to all failure callbacks and to replace the normal returns"""
         return e
 
     def on_success(self, obj, **kwargs):
         for name, callback in self.success_callbacks:
-            callback(obj, **kwargs)
+            callback(obj, module_name=self.module_name, **kwargs)
         return obj
 
 
@@ -223,9 +224,10 @@ class TqdmVisCallback(Module):
 
 
 class TimeLoggerCallback(Module):
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, fmt='Takes {time:.2f} s'):
         super().__init__()
         self.logger = log_utils.get_logger(logger)
+        self.fmt = fmt
 
     def on_process_start(self, obj, callback_status={}, **kwargs) -> None:
         callback_status[self.name] = time.time()
@@ -233,7 +235,7 @@ class TimeLoggerCallback(Module):
     def on_process_end(self, obj, callback_status={}, **kwargs) -> None:
         st = callback_status[self.name]
         et = time.time()
-        self.logger.info(f'Takes {et - st:.2f} s')
+        self.logger.info(self.fmt.format(time=et - st))
 
 
 class FileCacherCallback(Module):

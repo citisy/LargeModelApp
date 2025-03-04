@@ -26,6 +26,31 @@ class Module:
         pass
 
 
+class BaseCallbackWrapper:
+    ignore_errors = False
+
+    def __init__(self, **kwargs):
+        pass
+
+    def gen_kwargs(self, obj, **kwargs):
+        return {}
+
+    def process_wrap(self, func):
+        return func
+
+    def on_process_start_end_wrap(self, func):
+        return func
+
+    def on_process_start_wrap(self, func):
+        return func
+
+    def on_process_wrap(self, func):
+        return func
+
+    def on_process_end_wrap(self, func):
+        return func
+
+
 class CallbackWrapper:
     """
     Usages:
@@ -64,6 +89,7 @@ class CallbackWrapper:
         fun1(10, **wrapper_kwargs)
     """
     ignore_errors = False
+    add_std_err_callback = True
 
     def __init__(self, success_callbacks=None, failure_callbacks=None, module_name=None, **kwargs):
         self.success_callbacks = []
@@ -74,6 +100,9 @@ class CallbackWrapper:
         self.name = type(self).__name__
         self.module_name = module_name
         self.__dict__.update(kwargs)
+
+        if self.add_std_err_callback and not self.get_failure_callback('StdErrCallback'):
+            self.register_failure_callback(StdErrCallback())
 
     def register_success_callbacks(self, callbacks: List[Module]):
         for callback in callbacks:
@@ -86,6 +115,11 @@ class CallbackWrapper:
             name = type(callback).__name__
         self.success_callbacks.append((name, callback))
 
+    def get_success_callback(self, name: str) -> Module:
+        for name_, callback in self.success_callbacks:
+            if name_ == name:
+                return callback
+
     def register_failure_callbacks(self, callbacks: List[Module]):
         for callback in callbacks:
             self.register_failure_callback(callback)
@@ -96,6 +130,11 @@ class CallbackWrapper:
         else:
             name = type(callback).__name__
         self.failure_callbacks.append((name, callback))
+
+    def get_failure_callback(self, name: str) -> Module:
+        for name_, callback in self.failure_callbacks:
+            if name_ == name:
+                return callback
 
     def gen_kwargs(self, obj, **kwargs):
         return dict(
@@ -186,13 +225,14 @@ class StdOutCallback(Module):
 
 
 class StdErrCallback(Module):
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, fmt='{tb_info}', **kwargs):
         super().__init__()
         self.logger = log_utils.get_logger(logger)
+        self.fmt = fmt
 
     def on_process(self, obj, **kwargs):
         tb_info = str(traceback.format_exc()).rstrip('\n')
-        self.logger.error(tb_info)
+        self.logger.error(self.fmt.format(tb_info=tb_info, **kwargs))
 
 
 class TqdmVisCallback(Module):
@@ -224,7 +264,7 @@ class TqdmVisCallback(Module):
 
 
 class TimeLoggerCallback(Module):
-    def __init__(self, logger=None, fmt='Takes {time:.2f} s'):
+    def __init__(self, logger=None, fmt='Takes {time:.2f} s', **kwargs):
         super().__init__()
         self.logger = log_utils.get_logger(logger)
         self.fmt = fmt
@@ -235,7 +275,7 @@ class TimeLoggerCallback(Module):
     def on_process_end(self, obj, callback_status={}, **kwargs) -> None:
         st = callback_status[self.name]
         et = time.time()
-        self.logger.info(self.fmt.format(time=et - st))
+        self.logger.info(self.fmt.format(time=et - st, **kwargs))
 
 
 class FileCacherCallback(Module):

@@ -40,9 +40,24 @@ class Module:
         if self.callback_wrapper_kwargs:
             self.add_callback()
 
+    @classmethod
+    def from_configs(cls, cfgs, name=None, **kwargs):
+        if name:
+            pass
+        elif hasattr(cls, 'name'):
+            name = cls.name
+        else:
+            name = cls.__name__
+
+        config = cfgs.get(name, {})
+        config = configs.ConfigObjParse.merge_dict(config, kwargs)
+
+        return cls(cfgs=cfgs, name=name, **config)
+
     def add_callback(self):
-        self.callback_wrapper = self.callback_wrapper_ins(module_name=self.name, **self.callback_wrapper_kwargs)
-        self._process = self.callback_wrapper.process_wrap(self._process)
+        if not hasattr(self, 'callback_wrapper'):
+            self.callback_wrapper = self.callback_wrapper_ins(module_name=self.name, **self.callback_wrapper_kwargs)
+            self._process = self.callback_wrapper.process_wrap(self._process)
 
     @property
     def ignore_errors(self):
@@ -64,9 +79,9 @@ class Module:
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs = self.gen_kwargs(obj, **kwargs)
         if hasattr(self, 'callback_wrapper'):
             kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
     def _process(self, obj, **kwargs):
@@ -178,19 +193,19 @@ class RetryModule(Module):
         self._nodes[i] = self.retry.add_try(err_type=self.err_type)(self._nodes[i])
 
 
-class BaseServer(Module):
+class MultiThreadModule(Module):
+    n_pool = 1  # often use to control a single thread
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._modules = [
-            self.on_receive_start,
-            *self._nodes,
-            self.on_respond_end
-        ]
+        from concurrent.futures import ThreadPoolExecutor
+        self.pool = ThreadPoolExecutor(max_workers=self.n_pool)
 
-    def on_receive_start(self, obj, **kwargs):
-        return obj
-
-    def on_respond_end(self, obj, **kwargs):
+    def _process(self, obj, **kwargs):
+        t = self.pool.submit(super()._process, obj, **kwargs)
+        obj = t.result()
+        if isinstance(obj, Exception):
+            raise obj
         return obj
 
 
@@ -226,10 +241,13 @@ class ModuleList(Module):
             name = type(module).__name__
         self.modules.append((name, module))
 
-    def get_module(self, name):
-        for _name, module in self.modules:
-            if _name == name:
-                return module
+    def get_module(self, name: str | int) -> Module:
+        if isinstance(name, int):
+            return self.modules[name][1]
+        else:
+            for _name, module in self.modules:
+                if _name == name:
+                    return module
 
     def module_control(self, name, module, mask_modules=(), apply_modules=(), start_module=None, end_module=None, **kwargs):
         """control the module is masked or applied,
@@ -243,16 +261,7 @@ class ModuleList(Module):
         if not (getattr(module, 'apply', True) or name in apply_modules):
             return True
 
-        start, end = 0, len(self.modules)
-        for i, (_name, module) in enumerate(self.modules):
-            if module.allow_start and _name == start_module:
-                start = i
-
-            if module.allow_end and _name == end_module:
-                end = i + 1
-
-        mask_flag = [True] * len(self.modules)
-        mask_flag[start:end] = [False] * (end - start)
+        mask_flag, _ = self._make_mask_flag(start_module, end_module, apply_modules)
 
         for i, (_name, module) in enumerate(self.modules):
             if _name == name and mask_flag[i]:
@@ -260,26 +269,49 @@ class ModuleList(Module):
 
         return False
 
-    def apply_setting(self, obj, func_name, cur_func_name):
+    def _make_mask_flag(self, start_module, end_module, apply_modules):
+        start, end = 0, len(self.modules)
+        is_shoot = [False, False]
+        mask_flag = [True] * len(self.modules)
+        for i, (_name, module) in enumerate(self.modules):
+            _is_shoot = [False, False]
+            if isinstance(module, ModuleList):
+                _is_shoot = module._make_mask_flag(start_module, end_module, apply_modules)[1]
+
+            if module.allow_start and _name == start_module or _is_shoot[0]:
+                start = i
+                is_shoot[0] = True
+
+            if module.allow_end and _name == end_module or _is_shoot[1]:
+                end = i + 1
+                is_shoot[1] = True
+
+            if _name in apply_modules:
+                mask_flag[i] = False
+
+        mask_flag[start:end] = [False] * (end - start)
+        return mask_flag, is_shoot
+
+    def apply_setting(self, obj, func_name):
         setattr(self, func_name, obj)
 
         for name, module in self.modules:
             if isinstance(module, (Sequential, Pipeline)):
-                module.apply_setting(obj, func_name, cur_func_name)
+                module.apply_setting(obj, func_name)
             else:
                 setattr(module, func_name, obj)
 
     def logger_(self, logger=None):
-        self.apply_setting(log_utils.get_logger(logger), 'logger', 'logger_')
+        self.apply_setting(log_utils.get_logger(logger), 'logger')
 
     def ignore_errors_(self, ignore=True):
-        self.apply_setting(ignore, 'ignore_errors', 'ignore_errors_')
+        self.apply_setting(ignore, 'ignore_errors')
 
     def apply_(self, apply=True):
-        self.apply_setting(apply, 'apply', 'apply_')
+        self.apply_setting(apply, 'apply')
 
     def mask_(self, mask=True):
-        self.apply_setting(mask, 'mask', 'mask_')
+        self.apply_setting(mask, 'mask')
 
     def __getitem__(self, key):
         if isinstance(key, str):
@@ -402,7 +434,7 @@ class SwitchPipeline(Pipeline):
 
         return obj
 
-    def switch(self, obj, **kwargs) -> str:
+    def switch(self, obj, **kwargs) -> str | int:
         """return the name of selected module"""
         raise NotImplemented
 
@@ -511,7 +543,7 @@ class Sequential(ModuleList):
             self.iter_callback_wrapper.ignore_errors = ignore
 
     def ignore_iter_errors_(self, ignore=True):
-        self.apply_setting(ignore, 'ignore_iter_errors', 'ignore_iter_errors_')
+        self.apply_setting(ignore, 'ignore_iter_errors')
 
     def on_process(self, obj, **kwargs):
         return self._iter(obj, **kwargs)
@@ -747,7 +779,7 @@ class BaseSequentialOutput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
 
-    def on_process(self, objs: list, **kwargs):
+    def on_process(self, objs: list, raw_obj=None, **kwargs):
         return objs
 
 

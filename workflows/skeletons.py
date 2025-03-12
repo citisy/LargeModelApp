@@ -193,6 +193,19 @@ class RetryModule(Module):
         self._nodes[i] = self.retry.add_try(err_type=self.err_type)(self._nodes[i])
 
 
+class SkipModule(Module):
+    def on_process(self, obj, **kwargs):
+        if self.skip(obj, **kwargs):
+            return obj
+
+        else:
+            return super().on_process(obj, **kwargs)
+
+    def skip(self, obj, **kwargs) -> bool:
+        """True to skip the process, and False to access the process"""
+        return False
+
+
 class MultiThreadModule(Module):
     n_pool = 1  # often use to control a single thread
 
@@ -359,7 +372,7 @@ class Pipeline(ModuleList):
         return obj
 
 
-class LoopPipeline(Pipeline, LoopModule):
+class LoopPipeline(LoopModule, Pipeline):
     """
     Usages:
         class MyLoop(LoopPipeline):
@@ -378,7 +391,7 @@ class LoopPipeline(Pipeline, LoopModule):
     """
 
 
-class RetryPipeline(Pipeline, RetryModule):
+class RetryPipeline(RetryModule, Pipeline):
     """
     Usages:
         class E(Module):
@@ -423,10 +436,19 @@ class SwitchPipeline(Pipeline):
         pipe('B')
     """
 
+    def __init__(self, *args, fail_module=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_module = fail_module
+
     def on_process(self, obj, **kwargs):
         name = self.switch(obj, **kwargs)
         module = self.get_module(name)
-        assert module is not None, f'{name} is not found in {self.modules}'
+        if module is None:
+            if self.fail_module is None:
+                raise ValueError(f'{name} is not found in {self.modules}')
+            else:
+                module = self.fail_module
+
         obj = module(obj, **kwargs)
 
         if isinstance(obj, Exception):
@@ -437,6 +459,20 @@ class SwitchPipeline(Pipeline):
     def switch(self, obj, **kwargs) -> str | int:
         """return the name of selected module"""
         raise NotImplemented
+
+
+class SkipPipeline(SkipModule, Pipeline):
+    """
+    Usages:
+        class A(Module):
+            def on_process(self, obj, **kwargs):
+                return obj
+
+        pipe = SkipPipeline(
+            A()
+        )
+        pipe(True)
+    """
 
 
 class MultiProcessPipeline(Pipeline):

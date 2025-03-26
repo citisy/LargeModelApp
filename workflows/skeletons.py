@@ -52,6 +52,8 @@ class Module:
         config = cfgs.get(name, {})
         config = configs.ConfigObjParse.merge_dict(config, kwargs)
 
+        cls.config = config
+
         return cls(cfgs=cfgs, name=name, **config)
 
     def add_callback(self):
@@ -117,7 +119,14 @@ class Module:
         )
 
     def __repr__(self):
-        return self.name
+        if hasattr(self, 'config') and self.config:
+            s = self.name + '(\n'
+            for k, v in self.config.items():
+                s += f'    {k}={v},\n'
+            s += ')'
+            return s
+        else:
+            return self.name
 
 
 class LoopModule(Module):
@@ -335,10 +344,9 @@ class ModuleList(Module):
             raise
 
     def __repr__(self):
-        s = f'{self.name}(\n'
-        for name, module in self.modules:
-            if isinstance(module, ModuleList):
-                name = str(module)
+        s = f'{super().__repr__()}(\n'
+        for _, module in self.modules:
+            name = str(module)
             name = '\n'.join([' ' * 4 + _ for _ in name.split('\n')])
             s += name + '\n'
         s = s + ')'

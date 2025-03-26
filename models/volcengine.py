@@ -20,21 +20,14 @@ class Model(openai.Base):
             **self.client_kwargs
         )
 
-    def on_process(self, obj, **kwargs):
-        """
-        Examples:
-            model = Model(...)
-            obj = dict(post_kwargs=dict(
-                messages=messages
-            ))
-            model(obj)
-        """
-        # important post_kwargs: [messages]
-        post_kwargs = obj['post_kwargs']
-
+    def llm_request(self, **post_kwargs):
         post_result = self.client.chat.completions.create(
             model=self.model,
             **post_kwargs
         )
-        obj.update(post_result=post_result)
-        return obj
+        content = post_result.choices[0].message.content
+        return content
+
+
+class ModelV2(openai.Model):
+    """Base on openai"""

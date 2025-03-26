@@ -1,20 +1,22 @@
 import re
-import requests
 import warnings
-import numpy as np
 from typing import List
+
+import numpy as np
+import requests
+
 from utils import configs, converter
 from workflows.skeletons import Module
 
 
 class Model(Module):
-    """base on api of stable-diffusion-webui
+    """base on apis of stable-diffusion-webui
     https://github.com/AUTOMATIC1111/stable-diffusion-webui"""
+    host = '127.0.0.1'
+    port = 7860
 
-    def __init__(self, host='127.0.0.1', port=7860, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.host = host
-        self.port = port
 
         url = f'http://{self.host}:{self.port}/openapi.json'
         r = requests.get(url)
@@ -61,8 +63,8 @@ class Model(Module):
                 p = self.cache
                 for s in ref.split('/')[1:]:
                     p = p[s]
-                ret = configs.parse_pydantic_schema(p, {})
-                ret = configs.parse_pydantic_dict(ret, return_default_value=True)
+                ret = configs.PydanticParse.parse_schema(p, {})
+                ret = configs.PydanticParse.parse_ret_dict(ret, return_default_value=True)
                 return ret
             else:
                 return {}
@@ -71,18 +73,7 @@ class Model(Module):
             warnings.warn('can not find post method')
             return {}
 
-    def get_example_post_output(self, path):
-        pass
-
-    def on_process(self, obj, **kwargs):
-        path = obj['req_path']
-        post_kwargs = obj['post_kwargs']
-        ret = self._call(path, **post_kwargs)
-
-        obj.update(ret=ret)
-        return obj
-
-    def _call(self, path, **post_kwargs):
+    def request(self, path, **post_kwargs) -> dict:
         kwargs = self.get_example_post_input(path)
         kwargs.update(post_kwargs)
         url = f'http://{self.host}:{self.port}/{path}'
@@ -90,13 +81,15 @@ class Model(Module):
         r = requests.post(url, json=kwargs)
         assert r.status_code == 200, r.json()
 
-        return r.json()
+        ret = r.json()
+
+        return ret
 
     def txt2img(self, **post_kwargs) -> List[np.ndarray]:
-        obj = self(dict(
-            req_path='/sdapi/v1/txt2img',
-            post_kwargs=post_kwargs
-        ))
+        obj = self.request(
+            path='/sdapi/v1/txt2img',
+            **post_kwargs
+        )
 
         ret = obj['ret']
 
@@ -108,10 +101,10 @@ class Model(Module):
         return images
 
     def img2img(self, **post_kwargs) -> List[np.ndarray]:
-        obj = self(dict(
-            req_path='/sdapi/v1/img2img',
-            post_kwargs=post_kwargs
-        ))
+        obj = self.request(
+            path='/sdapi/v1/img2img',
+            **post_kwargs
+        )
 
         ret = obj['ret']
 

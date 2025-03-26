@@ -25,6 +25,9 @@ class Module:
     def on_process_end(self, obj, **kwargs) -> None:
         pass
 
+    def __repr__(self):
+        return self.name
+
 
 class BaseCallbackWrapper:
     ignore_errors = False
@@ -115,6 +118,9 @@ class CallbackWrapper:
             name = type(callback).__name__
         self.success_callbacks.append((name, callback))
 
+    def de_register_success_callback(self, name: str):
+        self.success_callbacks = [(name_, callback) for name_, callback in self.success_callbacks if name_ != name]
+
     def get_success_callback(self, name: str) -> Module:
         for name_, callback in self.success_callbacks:
             if name_ == name:
@@ -130,6 +136,9 @@ class CallbackWrapper:
         else:
             name = type(callback).__name__
         self.failure_callbacks.append((name, callback))
+
+    def de_register_failure_callbacks(self, name: str):
+        self.failure_callbacks = [(name_, callback) for name_, callback in self.failure_callbacks if name_ != name]
 
     def get_failure_callback(self, name: str) -> Module:
         for name_, callback in self.failure_callbacks:
@@ -265,7 +274,7 @@ class TqdmVisCallback(Module):
 
 class TimeLoggerCallback(Module):
     def __init__(self, logger=None, fmt='Takes {time:.2f} s', **kwargs):
-        super().__init__()
+        super().__init__(**kwargs)
         self.logger = log_utils.get_logger(logger)
         self.fmt = fmt
 

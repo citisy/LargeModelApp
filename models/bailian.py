@@ -1,5 +1,7 @@
-from dashscope import Generation    # pip install dashscope
 from http import HTTPStatus
+
+from dashscope import Generation  # pip install dashscope
+
 from . import openai
 
 
@@ -7,10 +9,7 @@ class Model(openai.Base):
     model: str = 'qwen-max'
     api_key: str
 
-    def on_process(self, obj, **kwargs):
-        # important post_kwargs: [prompt, messages, history]
-        post_kwargs = obj['post_kwargs']
-
+    def llm_request(self, **post_kwargs):
         response = Generation.call(
             self.model,
             api_key=self.api_key,
@@ -24,5 +23,27 @@ class Model(openai.Base):
         )
 
         post_result = response.output
-        obj.update(post_result=post_result)
-        return obj
+        content = post_result.choices[0].message.content
+        return content
+
+
+class ModelV2(openai.Model):
+    """Base on openai"""
+
+
+class QwenVl(openai.Model):
+    def make_message(self, img_url, user, *args, **kwargs):
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": img_url
+                        },
+                    },
+                    {"type": "text", "text": user},
+                ],
+            }
+        ]

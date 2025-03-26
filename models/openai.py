@@ -2,17 +2,33 @@ from workflows.skeletons import Module
 
 
 class Base(Module):
-    def on_process_end(self, obj, **kwargs):
-        post_result = obj['post_result']
-        content = post_result.choices[0].message.content
-        obj.update(content=content)
+    def request(self, *args, **kwargs):
+        messages = self.make_message(*args, **kwargs)
+        content = self.llm_request(messages=messages)
+        return content
 
-        return obj
+    def make_message(self, sys, user, *args, **kwargs):
+        return [
+            {
+                "role": "system",
+                "content": sys,
+            },
+            {
+                "role": "user",
+                "content": user,
+            },
+        ]
+
+    def llm_request(self, **post_kwargs):
+        raise NotImplementedError
 
 
 class Model(Base):
     model: str = 'gpt-4'
-    client_kwargs: dict = {}
+    client_kwargs: dict = dict(
+        api_key=...,
+        base_url=...
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -20,14 +36,10 @@ class Model(Base):
         from openai import OpenAI  # pip install openai
         self.client = OpenAI(**self.client_kwargs)
 
-    def on_process(self, obj, **kwargs):
-        # important post_kwargs: [messages]
-        post_kwargs = obj['post_kwargs']
-
+    def llm_request(self, **post_kwargs):
         post_result = self.client.chat.completions.create(
             model=self.model,
             **post_kwargs
         )
-
-        obj.update(post_result=post_result)
-        return obj
+        content = post_result.choices[0].message.content
+        return content

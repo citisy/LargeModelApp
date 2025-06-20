@@ -2,6 +2,7 @@ from typing import List, Dict, Optional
 
 from utils import log_utils, op_utils, configs
 from .callbacks import CallbackWrapper
+import uuid
 
 
 class Module:
@@ -17,12 +18,15 @@ class Module:
     name: str
 
     def __init__(self, logger=None, success_callbacks=None, failure_callbacks=None, **kwargs):
+        from . import bundled
+
         if not hasattr(self, 'name'):
             self.name = type(self).__name__
 
         self.__dict__.update(kwargs)
 
         self.logger = log_utils.get_logger(logger)
+        self.visualize = bundled.Visualizer()
 
         self._nodes = [
             self.on_process_start,
@@ -41,7 +45,7 @@ class Module:
             self.add_callback()
 
     @classmethod
-    def from_configs(cls, cfgs, name=None, **kwargs):
+    def from_configs(cls, cfgs, *args, name=None, **kwargs):
         if name:
             pass
         elif hasattr(cls, 'name'):
@@ -54,7 +58,7 @@ class Module:
 
         cls.config = config
 
-        return cls(cfgs=cfgs, name=name, **config)
+        return cls(*args, cfgs=cfgs, name=name, **config)
 
     def add_callback(self):
         if not hasattr(self, 'callback_wrapper'):
@@ -109,24 +113,37 @@ class Module:
             kwargs.setdefault(k, getattr(self, k, default))
 
     def module_info(self):
-        return dict(
-            name=self.name,
-            comments=self.__doc__,
-            apply=self.apply,
-            mask=self.mask,
-            allow_start=self.allow_start,
-            allow_end=self.allow_end,
-        )
+        return self.visualize.module_info(self)
 
     def __repr__(self):
-        if hasattr(self, 'config') and self.config:
-            s = self.name + '(\n'
-            for k, v in self.config.items():
-                s += f'    {k}={v},\n'
-            s += ')'
-            return s
-        else:
-            return self.name
+        return self.visualize.str(self)
+
+    def flow_chat(self, *args, **kwargs):
+        return self.visualize.flow_chat(self, *args, **kwargs)
+
+
+class AsyncModule(Module):
+    async def on_process(self, obj, **kwargs):
+        return super().on_process(obj, **kwargs)
+
+    async def on_process_start(self, obj, **kwargs):
+        return super().on_process_start(obj, **kwargs)
+
+    async def on_process_end(self, obj, **kwargs):
+        return super().on_process_end(obj, **kwargs)
+
+    async def __call__(self, obj, **kwargs):
+        # todo, `gen_kwargs` does not be wrapped in callback
+        if hasattr(self, 'callback_wrapper'):
+            kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = self.gen_kwargs(obj, **kwargs)
+        return await self._process(obj, **kwargs)
+
+    async def _process(self, obj, **kwargs):
+        for node in self._nodes:
+            obj = await node(obj, **kwargs)  # noqa
+
+        return obj
 
 
 class LoopModule(Module):
@@ -342,24 +359,6 @@ class ModuleList(Module):
             return self.modules[key][1]
         else:
             raise
-
-    def __repr__(self):
-        s = f'{super().__repr__()}(\n'
-        for _, module in self.modules:
-            name = str(module)
-            name = '\n'.join([' ' * 4 + _ for _ in name.split('\n')])
-            s += name + '\n'
-        s = s + ')'
-        return s
-
-    def module_info(self):
-        s = []
-        for name, module in self.modules:
-            info = module.module_info()
-            s.append(info)
-        info = super().module_info()
-        info['modules'] = s
-        return info
 
 
 class Pipeline(ModuleList):
@@ -619,6 +618,40 @@ class Sequential(ModuleList):
         return iter_obj
 
 
+class IterSequential(Sequential):
+    def _iter(self, obj, **kwargs):
+        _, input_module = self.modules[0]
+        _, output_module = self.modules[-1]
+        results = []
+        for iter_obj in input_module(obj, **kwargs):
+            iter_obj = self._iter_result(iter_obj, **kwargs)
+            if self.skip_exception_return and isinstance(iter_obj, Exception):
+                continue
+            if self.cache_all_results:
+                results.append(iter_obj)
+
+            yield iter_obj
+
+        return output_module(results, raw_obj=obj, **kwargs)
+
+
+class LoopSequential(Sequential):
+    """data will be used recurrently for each loop"""
+
+    def _iter(self, obj, **kwargs):
+        _, input_module = self.modules[0]
+        _, output_module = self.modules[-1]
+
+        for iter_obj in input_module(obj, **kwargs):
+            # iter_obj will be merged in obj
+            obj.update(iter_obj)
+            obj = self._iter_result(obj, **kwargs)
+            if self.skip_exception_return and isinstance(obj, Exception):
+                continue
+
+        return output_module(obj, **kwargs)
+
+
 class BatchSequential(Sequential):
     """run batch data step by step
     the next batch data start process until the last batch data has been processed by all the modules,
@@ -784,6 +817,7 @@ class MultiThreadDataSequential(Sequential):
             threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
             results.append(None)
 
+            # to avoid the threads accumulate too much, check each iter, and close the threads which is finished.
             self.checkout_iter_results(threads, results, on_process=True, **kwargs)
 
         self.checkout_iter_results(threads, results, on_process=False, **kwargs)
@@ -814,7 +848,7 @@ class BaseSequentialInput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
 
-    def on_process(self, objs: list, **kwargs):
+    def on_process(self, objs: Optional[list], **kwargs):
         for obj in objs:
             yield obj
 

@@ -32,7 +32,12 @@ class ModelV2(openai.Model):
 
 
 class QwenVl(openai.Model):
-    def make_message(self, img_url, user, *args, **kwargs):
+    def make_message(self, image_obj, user, *args, **kwargs):
+        """
+        image_obj can be an url like "http://xxx"
+        a file path like "file://xxx"
+        a base64 str like "data:image/png;base64,xxx"
+        """
         return [
             {
                 "role": "user",
@@ -40,7 +45,7 @@ class QwenVl(openai.Model):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": img_url
+                            "url": image_obj
                         },
                     },
                     {"type": "text", "text": user},

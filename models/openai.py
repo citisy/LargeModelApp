@@ -2,9 +2,9 @@ from workflows.skeletons import Module
 
 
 class Base(Module):
-    def request(self, *args, **kwargs):
-        messages = self.make_message(*args, **kwargs)
-        content = self.llm_request(messages=messages)
+    def request(self, *args, message_kwargs=dict(), post_kwargs=dict()):
+        messages = self.make_message(*args, **message_kwargs)
+        content = self.llm_request(messages=messages, **post_kwargs)
         return content
 
     def make_message(self, sys, user, *args, **kwargs):

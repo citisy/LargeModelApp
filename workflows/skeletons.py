@@ -232,7 +232,7 @@ class SkipModule(Module):
         return False
 
 
-class MultiThreadModule(Module):
+class ThreadsLimitModule(Module):
     n_pool = 1  # often use to control a single thread
 
     def __init__(self, **kwargs):

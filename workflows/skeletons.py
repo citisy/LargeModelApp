@@ -1,5 +1,7 @@
 from typing import List, Dict, Optional
 
+from tqdm import tqdm
+
 from utils import log_utils, op_utils, configs
 from .callbacks import CallbackWrapper
 import uuid
@@ -214,18 +216,17 @@ class RetryModule(Module):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        i = self._nodes.index(self.on_process)
         self.retry = op_utils.Retry(stdout_method=self.logger.info, count=self.retry_count, wait=self.retry_wait)
-        self._nodes[i] = self.retry.add_try(err_type=self.err_type)(self._nodes[i])
+        self._process = self.retry.add_try(err_type=self.err_type)(self._process)
 
 
 class SkipModule(Module):
-    def on_process(self, obj, **kwargs):
+    def _process(self, obj, **kwargs):
         if self.skip(obj, **kwargs):
             return obj
 
         else:
-            return super().on_process(obj, **kwargs)
+            return super()._process(obj, **kwargs)
 
     def skip(self, obj, **kwargs) -> bool:
         """True to skip the process, and False to access the process"""
@@ -379,7 +380,7 @@ class Pipeline(ModuleList):
         return obj
 
 
-class LoopPipeline(LoopModule, Pipeline):
+class LoopPipeline(Pipeline, LoopModule):
     """
     Usages:
         class MyLoop(LoopPipeline):
@@ -398,7 +399,7 @@ class LoopPipeline(LoopModule, Pipeline):
     """
 
 
-class RetryPipeline(RetryModule, Pipeline):
+class RetryPipeline(Pipeline, RetryModule):
     """
     Usages:
         class E(Module):
@@ -468,7 +469,7 @@ class SwitchPipeline(Pipeline):
         raise NotImplemented
 
 
-class SkipPipeline(SkipModule, Pipeline):
+class SkipPipeline(Pipeline, SkipModule):
     """
     Usages:
         class A(Module):
@@ -552,6 +553,8 @@ class Sequential(ModuleList):
     iter_callback_wrapper_ins = CallbackWrapper
     iter_callback_wrapper_kwargs = dict()
 
+    pbar_visualize = False
+
     def __init__(self, *modules, force_add_input=True, force_add_output=True, **kwargs):
         if force_add_input and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
@@ -595,7 +598,10 @@ class Sequential(ModuleList):
         _, input_module = self.modules[0]
         _, output_module = self.modules[-1]
         results = []
-        for iter_obj in input_module(obj, **kwargs):
+        iter_objs = input_module(obj, **kwargs)
+        if self.pbar_visualize:
+            iter_objs = tqdm(iter_objs, desc=self.name)
+        for iter_obj in iter_objs:
             iter_obj = self._iter_result(iter_obj, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
                 continue
@@ -619,11 +625,15 @@ class Sequential(ModuleList):
 
 
 class IterSequential(Sequential):
+    """Each data result will yield out"""
     def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
         _, output_module = self.modules[-1]
         results = []
-        for iter_obj in input_module(obj, **kwargs):
+        iter_objs = input_module(obj, **kwargs)
+        if self.pbar_visualize:
+            iter_objs = tqdm(iter_objs, desc=self.name)
+        for iter_obj in iter_objs:
             iter_obj = self._iter_result(iter_obj, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
                 continue
@@ -666,7 +676,10 @@ class BatchSequential(Sequential):
         results = []
         i = 0
         iter_objs = []
-        for iter_obj in input_module(obj, **kwargs):
+        iter_objs = input_module(obj, **kwargs)
+        if self.pbar_visualize:
+            iter_objs = tqdm(iter_objs, desc=self.name)
+        for iter_obj in iter_objs:
             i += 1
 
             iter_objs.append(iter_obj)
@@ -737,20 +750,24 @@ class MultiProcessDataSequential(Sequential):
         _, output_module = self.modules[-1]
         processes = []
         results = []
+        pbar = None
+        if self.pbar_visualize:
+            # set a very small delay to avoid printing the pbar when initialization
+            pbar = tqdm(desc=self.name, delay=1e-9)
         for iter_obj in input_module(obj, **kwargs):
             processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
             results.append(None)
 
-            self.checkout_iter_results(processes, results, on_process=True, **kwargs)
+            self.checkout_iter_results(processes, results, on_process=True, pbar=pbar, **kwargs)
 
         pool.close()
         pool.join()
 
-        self.checkout_iter_results(processes, results, on_process=False, **kwargs)
+        self.checkout_iter_results(processes, results, on_process=False, pbar=pbar, **kwargs)
 
         return output_module(results, raw_obj=obj, **kwargs)
 
-    def checkout_iter_results(self, processes, results, on_process=True, **kwargs):
+    def checkout_iter_results(self, processes, results, on_process=True, pbar=None, **kwargs):
         for i, p in enumerate(processes):
             if p is None:
                 continue
@@ -766,6 +783,9 @@ class MultiProcessDataSequential(Sequential):
 
             if self.cache_all_results:
                 results[i] = iter_obj
+
+            if self.pbar_visualize:
+                pbar.update(1)
 
     def _iter_result(self, p, **kwargs):
         return p.get()
@@ -813,17 +833,22 @@ class MultiThreadDataSequential(Sequential):
         _, output_module = self.modules[-1]
         results = []
         threads = []
+        pbar = None
+        if self.pbar_visualize:
+            # set a very small delay to avoid printing the pbar when initialization
+            pbar = tqdm(desc=self.name, delay=1e-9)
+
         for iter_obj in input_module(obj, **kwargs):
             threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
             results.append(None)
 
             # to avoid the threads accumulate too much, check each iter, and close the threads which is finished.
-            self.checkout_iter_results(threads, results, on_process=True, **kwargs)
+            self.checkout_iter_results(threads, results, on_process=True, pbar=pbar, **kwargs)
 
-        self.checkout_iter_results(threads, results, on_process=False, **kwargs)
+        self.checkout_iter_results(threads, results, on_process=False, pbar=pbar, **kwargs)
         return output_module(results, raw_obj=obj, **kwargs)
 
-    def checkout_iter_results(self, threads, results, on_process=True, **kwargs):
+    def checkout_iter_results(self, threads, results, on_process=True, pbar=None, **kwargs):
         for i, t in enumerate(threads):
             if t is None:
                 continue
@@ -839,6 +864,9 @@ class MultiThreadDataSequential(Sequential):
 
             if self.cache_all_results:
                 results[i] = iter_obj
+
+            if self.pbar_visualize:
+                pbar.update(1)
 
     def _iter_result(self, t, **kwargs):
         return t.result()

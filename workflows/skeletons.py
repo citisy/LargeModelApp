@@ -2,11 +2,13 @@ from typing import List, Dict, Optional
 
 from tqdm import tqdm
 
-from utils import log_utils, op_utils, configs
+from utils import log_utils, op_utils, configs, os_lib
 from .callbacks import CallbackWrapper
-import uuid
+
+base_module_tables = op_utils.RegisterTables()
 
 
+@base_module_tables.add_register()
 class Module:
     # control the module is masked or applied
     mask = False  # this value will not be changed usually, unless want to mask the module forever
@@ -61,6 +63,34 @@ class Module:
         cls.config = config
 
         return cls(*args, cfgs=cfgs, name=name, **config)
+
+    @classmethod
+    def from_dict(cls, dic, register_tables):
+        """
+
+        Args:
+            dic (dict): {"name": "", "config": dict(), "modules": []}
+            register_tables:
+
+        """
+        name = dic['name']
+        module_cls = register_tables.get(name) or base_module_tables.get(name)
+        assert module_cls is not None, f'Module `{name}` is not found in register_tables'
+        modules = [cls.from_dict(m, register_tables) for m in dic.get('modules', [])]
+        module = module_cls(*modules, **dic.get('config', {}))
+
+        return module
+
+    @classmethod
+    def from_file(cls, file_path, register_tables):
+        """
+        Args:
+            file_path (str): after parse the file, would like to get a dict for `from_dict`
+            register_tables (dict | op_utils.RegisterTables):
+        """
+        dic = os_lib.loader.auto_load(file_path)
+        assert isinstance(dic, dict), f'after parse the file, would like to get a `dict` not the `{type(dic)}`'
+        return cls.from_dict(dic, register_tables)
 
     def add_callback(self):
         if not hasattr(self, 'callback_wrapper'):
@@ -124,6 +154,7 @@ class Module:
         return self.visualize.flow_chat(self, *args, **kwargs)
 
 
+@base_module_tables.add_register()
 class AsyncModule(Module):
     async def on_process(self, obj, **kwargs):
         return super().on_process(obj, **kwargs)
@@ -148,6 +179,7 @@ class AsyncModule(Module):
         return obj
 
 
+@base_module_tables.add_register()
 class LoopModule(Module):
     """
     Usages:
@@ -199,6 +231,7 @@ class LoopModule(Module):
         return counter + 1
 
 
+@base_module_tables.add_register()
 class RetryModule(Module):
     """
     Usages:
@@ -220,6 +253,7 @@ class RetryModule(Module):
         self._process = self.retry.add_try(err_type=self.err_type)(self._process)
 
 
+@base_module_tables.add_register()
 class SkipModule(Module):
     def _process(self, obj, **kwargs):
         if self.skip(obj, **kwargs):
@@ -233,6 +267,7 @@ class SkipModule(Module):
         return False
 
 
+@base_module_tables.add_register()
 class ThreadsLimitModule(Module):
     n_pool = 1  # often use to control a single thread
 
@@ -281,13 +316,22 @@ class ModuleList(Module):
             name = type(module).__name__
         self.modules.append((name, module))
 
-    def get_module(self, name: str | int) -> Module:
+    def get_module(self, name: str | int, default=None, recursive=False) -> Module:
         if isinstance(name, int):
             return self.modules[name][1]
         else:
             for _name, module in self.modules:
                 if _name == name:
                     return module
+            else:
+                if recursive:
+                    for _name, module in self.modules:
+                        if isinstance(module, ModuleList):
+                            m = module.get_module(name, recursive)
+                            if m:
+                                return m
+
+        return default
 
     def module_control(self, name, module, mask_modules=(), apply_modules=(), start_module=None, end_module=None, **kwargs):
         """control the module is masked or applied,
@@ -354,14 +398,12 @@ class ModuleList(Module):
         self.apply_setting(mask, 'mask')
 
     def __getitem__(self, key):
-        if isinstance(key, str):
-            return self.get_module(key)
-        elif isinstance(key, int):
-            return self.modules[key][1]
-        else:
-            raise
+        module = self.get_module(key)
+        assert module is not None, f'"{key}" is not the module of {self.name}'
+        return module
 
 
+@base_module_tables.add_register()
 class Pipeline(ModuleList):
     """run module step by step
     the next module start process until the last module has processed all the data,
@@ -380,6 +422,7 @@ class Pipeline(ModuleList):
         return obj
 
 
+@base_module_tables.add_register()
 class LoopPipeline(Pipeline, LoopModule):
     """
     Usages:
@@ -399,6 +442,7 @@ class LoopPipeline(Pipeline, LoopModule):
     """
 
 
+@base_module_tables.add_register()
 class RetryPipeline(Pipeline, RetryModule):
     """
     Usages:
@@ -413,6 +457,7 @@ class RetryPipeline(Pipeline, RetryModule):
     """
 
 
+@base_module_tables.add_register()
 class SwitchPipeline(Pipeline):
     """
     Usages:
@@ -469,6 +514,7 @@ class SwitchPipeline(Pipeline):
         raise NotImplemented
 
 
+@base_module_tables.add_register()
 class SkipPipeline(Pipeline, SkipModule):
     """
     Usages:
@@ -483,6 +529,7 @@ class SkipPipeline(Pipeline, SkipModule):
     """
 
 
+@base_module_tables.add_register()
 class MultiProcessPipeline(Pipeline):
     """modules parallel by multiple processes
     each module will have the same inputs,
@@ -512,6 +559,7 @@ class MultiProcessPipeline(Pipeline):
         return obj
 
 
+@base_module_tables.add_register()
 class MultiThreadPipeline(Pipeline):
     """modules parallel by multiple threads
     each module will have the same inputs,
@@ -540,6 +588,7 @@ class MultiThreadPipeline(Pipeline):
         return obj
 
 
+@base_module_tables.add_register()
 class Sequential(ModuleList):
     """run data step by step
     the next data start process until the last data has been processed by all the modules,
@@ -624,8 +673,10 @@ class Sequential(ModuleList):
         return iter_obj
 
 
+@base_module_tables.add_register()
 class IterSequential(Sequential):
     """Each data result will yield out"""
+
     def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
         _, output_module = self.modules[-1]
@@ -645,6 +696,7 @@ class IterSequential(Sequential):
         return output_module(results, raw_obj=obj, **kwargs)
 
 
+@base_module_tables.add_register()
 class LoopSequential(Sequential):
     """data will be used recurrently for each loop"""
 
@@ -662,6 +714,7 @@ class LoopSequential(Sequential):
         return output_module(obj, **kwargs)
 
 
+@base_module_tables.add_register()
 class BatchSequential(Sequential):
     """run batch data step by step
     the next batch data start process until the last batch data has been processed by all the modules,
@@ -702,6 +755,7 @@ class BatchSequential(Sequential):
         return output_module(results, raw_obj=obj, **kwargs)
 
 
+@base_module_tables.add_register()
 class MultiProcessModuleSequential(Sequential):
     """modules parallel by multiple processes
     each module will have the same inputs
@@ -737,6 +791,7 @@ class MultiProcessModuleSequential(Sequential):
         raise NotImplemented
 
 
+@base_module_tables.add_register()
 class MultiProcessDataSequential(Sequential):
     """data parallel by multiple processes"""
     n_pool = None
@@ -791,6 +846,7 @@ class MultiProcessDataSequential(Sequential):
         return p.get()
 
 
+@base_module_tables.add_register()
 class MultiThreadModuleSequential(Sequential):
     """module parallel by multiple threads,
     each module will have the same inputs,
@@ -819,6 +875,7 @@ class MultiThreadModuleSequential(Sequential):
         return iter_obj
 
 
+@base_module_tables.add_register()
 class MultiThreadDataSequential(Sequential):
     """data parallel by multiple threads"""
     n_pool = None
@@ -872,6 +929,7 @@ class MultiThreadDataSequential(Sequential):
         return t.result()
 
 
+@base_module_tables.add_register()
 class BaseSequentialInput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
@@ -881,6 +939,7 @@ class BaseSequentialInput(Module):
             yield obj
 
 
+@base_module_tables.add_register()
 class BaseSequentialOutput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
@@ -889,6 +948,7 @@ class BaseSequentialOutput(Module):
         return objs
 
 
+@base_module_tables.add_register()
 class DictSequentialInput(BaseSequentialInput):
     """input module for Sequential
     apply dict obj as input objs"""
@@ -909,6 +969,7 @@ class DictSequentialInput(BaseSequentialInput):
             yield obj
 
 
+@base_module_tables.add_register()
 class BasePipelineInput(Module):
     """default input module for Sequential
     do nothing, just return the inputs obj"""
@@ -917,6 +978,7 @@ class BasePipelineInput(Module):
         return objs
 
 
+@base_module_tables.add_register()
 class ListPipelineInput(BasePipelineInput):
     """input module for Pipeline
     apply list obj as input obj"""

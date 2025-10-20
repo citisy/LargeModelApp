@@ -92,6 +92,8 @@ class CallbackWrapper:
         fun1(10, **wrapper_kwargs)
     """
     ignore_errors = False
+    ignore_errors_type = Exception
+    raise_errors_type = type(None)
     add_std_err_callback = True
 
     def __init__(self, success_callbacks=None, failure_callbacks=None, module_name=None, **kwargs):
@@ -184,10 +186,12 @@ class CallbackWrapper:
 
             self.on_success(obj, **kwargs)
             return obj
-        except Exception as e:
+        except self.ignore_errors_type as e:
             obj = self.on_failure(e, obj, **kwargs)
 
-            if self.ignore_errors:
+            if isinstance(e, self.raise_errors_type):
+                raise e
+            elif self.ignore_errors:
                 return obj
             else:
                 raise e

@@ -246,11 +246,12 @@ class RetryModule(Module):
     retry_count = 3
     retry_wait = 15
     err_type = Exception
+    raise_type = type(None)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.retry = op_utils.Retry(stdout_method=self.logger.info, count=self.retry_count, wait=self.retry_wait)
-        self._process = self.retry.add_try(err_type=self.err_type)(self._process)
+        self._process = self.retry.add_try(err_type=self.err_type, raise_type=self.raise_type)(self._process)
 
 
 @base_module_tables.add_register()
@@ -502,6 +503,9 @@ class SwitchPipeline(Pipeline):
             else:
                 module = self.fail_module
 
+        if self.module_control(name, module, **kwargs):
+            return obj
+
         obj = module(obj, **kwargs)
 
         if isinstance(obj, Exception):
@@ -596,6 +600,7 @@ class Sequential(ModuleList):
     if not provided, default creates a new `BaseSequentialInput` module
     """
 
+    # only work with `ignore_iter_errors=True`
     skip_exception_return = False
     cache_all_results = True
 
@@ -903,6 +908,7 @@ class MultiThreadDataSequential(Sequential):
             self.checkout_iter_results(threads, results, on_process=True, pbar=pbar, **kwargs)
 
         self.checkout_iter_results(threads, results, on_process=False, pbar=pbar, **kwargs)
+        results = [r for r in results if r is not None]
         return output_module(results, raw_obj=obj, **kwargs)
 
     def checkout_iter_results(self, threads, results, on_process=True, pbar=None, **kwargs):

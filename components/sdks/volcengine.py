@@ -1,4 +1,5 @@
-from . import openai
+from components import openai
+from workflows import skeletons
 
 
 class Model(openai.Base):
@@ -29,5 +30,3 @@ class Model(openai.Base):
         return content
 
 
-class ModelV2(openai.Model):
-    """Base on openai"""

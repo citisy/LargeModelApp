@@ -82,6 +82,34 @@ class Module:
         return module
 
     @classmethod
+    def from_module_names(cls, module_names, register_tables, cfgs={}):
+        """
+
+        Args:
+            module_names (str| tuple): "m" | ("m1", ["mm1", 'mm2', ...])
+            register_tables:
+            cfgs (dict)
+
+        """
+        if isinstance(module_names, str):
+            name = module_names
+            module_cls = register_tables.get(name) or base_module_tables.get(name)
+            module = module_cls.from_configs(cfgs)
+
+        elif isinstance(module_names, tuple):
+            name, modules_names = module_names
+            module_cls = register_tables.get(name) or base_module_tables.get(name)
+            modules = []
+            for module_name in modules_names:
+                modules.append(cls.from_module_names(module_name, register_tables, cfgs))
+            module = module_cls.from_configs(cfgs, *modules)
+
+        else:
+            raise NotImplementedError
+
+        return module
+
+    @classmethod
     def from_file(cls, file_path, register_tables):
         """
         Args:
@@ -151,6 +179,11 @@ class Module:
         return self.visualize.str(self)
 
     def flow_chat(self, *args, **kwargs):
+        """
+        Usage:
+            module = Module()
+            module.flow_chat(filename, format='png')
+        """
         return self.visualize.flow_chat(self, *args, **kwargs)
 
 
@@ -255,6 +288,20 @@ class RetryModule(Module):
 
 
 @base_module_tables.add_register()
+class IgnoreExceptionModule(Module):
+    err_type = Exception
+    raise_type = type(None)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.ignore_exception = op_utils.IgnoreException(stdout_method=self.logger.info)
+        self._process = self.ignore_exception.add_ignore(err_type=self.err_type, raise_type=self.raise_type, err_fn=self.err_fn)(self._process)
+
+    def err_fn(self, obj, **kwargs):
+        return obj
+
+
+@base_module_tables.add_register()
 class SkipModule(Module):
     def _process(self, obj, **kwargs):
         if self.skip(obj, **kwargs):
@@ -295,27 +342,31 @@ class ModuleList(Module):
         for module in modules:
             self.register_module(module)
 
-    def register_module(self, module):
-        """set `module.name` as the module key
-        if not a `Module` type, convert it by the rule
-            list -> Sequential
-            tuple -> MultiThreadSequential
-            set -> MultiProcessSequential
-        """
-        if isinstance(module, list):
-            module = Sequential(*module)
-        elif isinstance(module, tuple):
-            module = MultiThreadModuleSequential(*module)
-        elif isinstance(module, set):
-            module = MultiProcessModuleSequential(module)
-        elif isinstance(module, dict):
+    def register_module(self, module, name=None):
+        """set `module.name` as the module key"""
+        if name:
             pass
-
-        if hasattr(module, 'name'):
+        elif hasattr(module, 'name'):
             name = module.name
         else:
             name = type(module).__name__
         self.modules.append((name, module))
+
+    def replace_module(self, module, name=None, count=None):
+        if name:
+            pass
+        elif hasattr(module, 'name'):
+            name = module.name
+        else:
+            name = type(module).__name__
+
+        c = 0
+        for i, (n, m) in enumerate(self.modules):
+            if n == name:
+                self.modules[i] = (name, module)
+                c += 1
+                if count and c >= count:
+                    break
 
     def get_module(self, name: str | int, default=None, recursive=False) -> Module:
         if isinstance(name, int):
@@ -452,6 +503,21 @@ class RetryPipeline(Pipeline, RetryModule):
                 raise ValueError(obj)
 
         pipe = RetryPipeline(
+            E()
+        )
+        pipe(0)
+    """
+
+
+@base_module_tables.add_register()
+class IgnoreExceptionPipeline(Pipeline, RetryModule):
+    """
+    Usages:
+        class E(Module):
+            def on_process(self, obj, **kwargs):
+                raise ValueError(obj)
+
+        pipe = IgnoreExceptionPipeline(
             E()
         )
         pipe(0)

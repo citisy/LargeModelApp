@@ -799,7 +799,6 @@ class BatchSequential(Sequential):
         _, output_module = self.modules[-1]
         results = []
         i = 0
-        iter_objs = []
         iter_objs = input_module(obj, **kwargs)
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)

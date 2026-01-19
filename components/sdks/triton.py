@@ -73,7 +73,8 @@ class TritonModule(skeletons.Module):
             ...
             async_req = trt_client.async_infer(
                 ...,
-                model_name=self.trt_model_name
+                model_name=self.trt_model_name,
+                config_path=self.config_path
             )
             async_reqs.append(async_req)
 

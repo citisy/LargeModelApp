@@ -1,6 +1,7 @@
 import asyncio
 
-from workflows import exceptions, skeletons
+from workflows import exceptions, skeletons, callbacks
+from .. import _callbacks, base
 
 
 class Base(skeletons.Module):
@@ -54,6 +55,74 @@ class Openai(Base):
             content = chunk.choices[0].delta.content
             if content:
                 yield content
+
+
+class OpenaiMysqlCallbackModule(Openai, base.MysqlCallbackModule):
+    add_url_callback = False
+
+    mysql_cacher_keys: list = ['model', 'messages', 'content', 'reasoning_content', 'total_tokens', 'prompt_tokens', 'completion_tokens', 'reasoning_tokens']
+    mysql_filter_mapping = {'pid': 'pid', 'sid': 'sid'}  # (mysql_key, obj_key)
+
+    global_cacher_keys = []
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.callback_wrapper.register_success_callback(
+            callbacks.TimeLoggerCallback(
+                fmt='[{pid}-{sid}] request ' + self.model + ' takes {time:.2f} s'
+            )
+        )
+
+        self.callback_wrapper.register_success_callback(
+            _callbacks.TimeDbCacheCallback(
+                mysql_table=self.mysql_table,
+                db_filter_mapping=self.mysql_filter_mapping,
+                cache_key='duration'
+            )
+        )
+        self.ignore_errors = False
+
+    def gen_kwargs(self, obj, **kwargs):
+        kwargs = super().gen_kwargs(obj, **kwargs)
+        kwargs.setdefault('sid', None)
+        return kwargs
+
+    def on_process_start(self, obj, pid=None, sid=None, **kwargs):
+        obj.update(
+            pid=pid,
+            sid=sid,
+            model=self.model,
+        )
+        return obj
+
+    def on_process_end(self, obj, **kwargs):
+        post_kwargs = obj['post_kwargs']
+        post_result = obj['post_result']
+
+        messages = post_kwargs['messages']
+
+        message = post_result.choices[0].message
+        content = message.content
+        reasoning_content = message.model_extra.get('reasoning_content', '')
+
+        usage = post_result.usage
+        completion_tokens = usage.completion_tokens
+        prompt_tokens = usage.prompt_tokens
+        total_tokens = usage.total_tokens
+        reasoning_tokens = usage.completion_tokens_details.reasoning_tokens if usage.completion_tokens_details else 0
+
+        obj.update(
+            messages=messages,
+            content=content,
+            reasoning_content=reasoning_content,
+            completion_tokens=completion_tokens,
+            prompt_tokens=prompt_tokens,
+            total_tokens=total_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+
+        return obj
 
 
 class Volcengine(skeletons.Module):
@@ -114,6 +183,38 @@ class Volcengine(skeletons.Module):
         ))
 
 
+class VolcengineMysqlModule(Volcengine):
+    """
+    Usage:
+        class LlmRequest(VolcengineDbCallbackModule):
+            def on_process(self, obj, task_id=None, **kwargs):
+                ...
+                llm_result = self.request(
+                    sys,
+                    user,
+                    global_kwargs=dict(
+                        pid=obj['id'],
+                        task_id=task_id,
+                        sid="xxx"
+                    )
+                )
+                ...
+                return obj
+
+    """
+    llm_cacher_mysql_table: str
+    max_input_length: int = None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.llm_client = OpenaiMysqlCallbackModule(
+            model=self.model,
+            client_kwargs=self.client_kwargs,
+            mysql_table=self.llm_cacher_mysql_table,
+            max_input_length=self.max_input_length
+        )
+
+
 class QwenVl(skeletons.Module):
     model: str
 
@@ -152,4 +253,3 @@ class QwenVl(skeletons.Module):
             )
         ))
         return ret['content']
-

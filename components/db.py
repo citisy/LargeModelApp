@@ -30,9 +30,8 @@ class MysqlDbModule(skeletons.Module):
 
 
 class UpdateMysqlDbModule(MysqlDbModule):
-    cacher_keys: list
-    process_info: str
-    task_process: int
+    cacher_keys: list = []
+    global_cacher_keys: list = []
     allow_duplicates = False
     filter_mapping = {'id': 'id'}  # (database_key, obj_key)
     pri_key = 'id'
@@ -40,15 +39,14 @@ class UpdateMysqlDbModule(MysqlDbModule):
     def on_process_end(self, obj: dict, debug=False, **kwargs):
         data = dict()
 
-        if hasattr(self, 'task_process'):
-            data['task_process'] = self.task_process
-
-        if hasattr(self, 'process_info'):
-            data['process_info'] = self.process_info
-
         for k in self.cacher_keys:
             if k in obj and obj[k] is not None:
                 data[k] = obj[k]
+
+        for k in self.global_cacher_keys:
+            v = getattr(self, k)
+            if v is not None:
+                data[k] = v
 
         cache_kwargs = dict(
             allow_duplicates=self.allow_duplicates,

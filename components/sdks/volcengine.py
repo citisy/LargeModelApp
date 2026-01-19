@@ -1,5 +1,4 @@
-from components import openai
-from workflows import skeletons
+from components.sdks import openai
 
 
 class Model(openai.Base):

@@ -1,9 +1,9 @@
 from typing import List, Dict, Optional
 
-from tqdm import tqdm
+from tqdm import tqdm, asyncio
 
 from utils import log_utils, op_utils, configs, os_lib
-from .callbacks import CallbackWrapper
+from . import callbacks
 
 base_module_tables = op_utils.RegisterTables()
 
@@ -16,7 +16,7 @@ class Module:
     allow_start = False  # allow the module to be started in a workflow or not
     allow_end = False  # allow the module to be ended in a workflow or not
 
-    callback_wrapper_ins = CallbackWrapper
+    callback_wrapper_ins = callbacks.CallbackWrapper
     callback_wrapper_kwargs = dict()
 
     name: str
@@ -45,11 +45,32 @@ class Module:
             self.callback_wrapper_kwargs = configs.ConfigObjParse.merge_dict(self.callback_wrapper_kwargs, dict(failure_callbacks=failure_callbacks))
 
         # note, not necessary to use judgment statements, but for the convenience of debugging
+        self.callback_wrapper = callbacks.FakeCallbackWrapper()
         if self.callback_wrapper_kwargs:
             self.add_callback()
 
     @classmethod
     def from_configs(cls, cfgs, *args, name=None, **kwargs):
+        """
+        Usage:
+            from workflows import skeletons
+
+            class A(skeletons.Pipeline):
+                pass
+
+            class AA(skeletons.Module):
+                pass
+
+            class AB(skeletons.Module):
+                pass
+
+            cfgs = dict(
+                A=dict(),
+                AA=dict(),
+                AB=dict()
+            )
+            m = A.from_configs(cfgs, AA(), AB())
+        """
         if name:
             pass
         elif hasattr(cls, 'name'):
@@ -65,43 +86,100 @@ class Module:
         return cls(*args, cfgs=cfgs, name=name, **config)
 
     @classmethod
-    def from_dict(cls, dic, register_tables):
+    def from_structure_dict(cls, structure_dict, register_tables):
         """
 
         Args:
-            dic (dict): {"name": "", "config": dict(), "modules": []}
+            structure_dict (dict): {"name": "", "config": dict(), "modules": []}
             register_tables:
 
+        Usage:
+            from workflows import skeletons
+            from utils import op_utils
+
+            register_tables = op_utils.RegisterTables()
+
+            @register_tables.add_register()
+            class A(skeletons.Pipeline):
+                pass
+
+            @register_tables.add_register()
+            class AA(skeletons.Module):
+                pass
+
+            @register_tables.add_register()
+            class AB(skeletons.Module):
+                pass
+
+            structure_dict = dict(
+                name='A',
+                config=dict(),
+                modules=[
+                    dict(name='AA', config=dict()),
+                    dict(name='AB', config=dict()),
+                ]
+            )
+            m = skeletons.Module.from_structure_dict(structure_dict, register_tables)
         """
-        name = dic['name']
+        name = structure_dict['name']
         module_cls = register_tables.get(name) or base_module_tables.get(name)
         assert module_cls is not None, f'Module `{name}` is not found in register_tables'
-        modules = [cls.from_dict(m, register_tables) for m in dic.get('modules', [])]
-        module = module_cls(*modules, **dic.get('config', {}))
+        modules = [cls.from_structure_dict(m, register_tables) for m in structure_dict.get('modules', [])]
+        module = module_cls(*modules, **structure_dict.get('config', {}))
 
         return module
 
+    def to_structure_dict(self):
+        d = dict(name=self.name, config=getattr(self, 'config', {}))
+        return d
+
     @classmethod
-    def from_module_names(cls, module_names, register_tables, cfgs={}):
+    def from_structure_array(cls, structure_array, register_tables, cfgs={}):
         """
 
         Args:
-            module_names (str| tuple): "m" | ("m1", ["mm1", 'mm2', ...])
+            structure_array (str| tuple): (name, [structure_array])
+                e.g. "m" | ("m1", ["mm1", 'mm2', ...])
             register_tables:
             cfgs (dict)
 
+        Usage:
+            from workflows import skeletons
+            from utils import op_utils
+
+            register_tables = op_utils.RegisterTables()
+
+            @register_tables.add_register()
+            class A(skeletons.Pipeline):
+                pass
+
+            @register_tables.add_register()
+            class AA(skeletons.Module):
+                pass
+
+            @register_tables.add_register()
+            class AB(skeletons.Module):
+                pass
+
+            structure_array = ('A', ['AA', ('A', ['AA']), 'AB'])
+            cfgs = dict(
+                A=dict(),
+                AA=dict(),
+                AB=dict()
+            )
+            m = skeletons.Module.from_module_names(structure_array, register_tables, cfgs)
         """
-        if isinstance(module_names, str):
-            name = module_names
+        if isinstance(structure_array, str):
+            name = structure_array
             module_cls = register_tables.get(name) or base_module_tables.get(name)
             module = module_cls.from_configs(cfgs)
 
-        elif isinstance(module_names, tuple):
-            name, modules_names = module_names
+        elif isinstance(structure_array, tuple):
+            name, modules_names = structure_array
             module_cls = register_tables.get(name) or base_module_tables.get(name)
             modules = []
             for module_name in modules_names:
-                modules.append(cls.from_module_names(module_name, register_tables, cfgs))
+                modules.append(cls.from_structure_array(module_name, register_tables, cfgs))
             module = module_cls.from_configs(cfgs, *modules)
 
         else:
@@ -109,8 +187,15 @@ class Module:
 
         return module
 
+    def to_structure_array(self):
+        structure_array = self.name
+        cfgs = {
+            self.name: getattr(self, 'config', {})
+        }
+        return structure_array, cfgs
+
     @classmethod
-    def from_file(cls, file_path, register_tables):
+    def from_structure_file(cls, file_path, register_tables):
         """
         Args:
             file_path (str): after parse the file, would like to get a dict for `from_dict`
@@ -118,35 +203,28 @@ class Module:
         """
         dic = os_lib.loader.auto_load(file_path)
         assert isinstance(dic, dict), f'after parse the file, would like to get a `dict` not the `{type(dic)}`'
-        return cls.from_dict(dic, register_tables)
+        return cls.from_structure_dict(dic, register_tables)
 
     def add_callback(self):
-        if not hasattr(self, 'callback_wrapper'):
+        if isinstance(self.callback_wrapper, callbacks.FakeCallbackWrapper):
             self.callback_wrapper = self.callback_wrapper_ins(module_name=self.name, **self.callback_wrapper_kwargs)
             self._process = self.callback_wrapper.process_wrap(self._process)
 
     @property
     def ignore_errors(self):
-        if hasattr(self, 'callback_wrapper'):
-            return self.callback_wrapper.ignore_errors
-        else:
-            return False
+        return self.callback_wrapper.ignore_errors
 
     @ignore_errors.setter
     def ignore_errors(self, ignore):
-        if hasattr(self, 'callback_wrapper'):
-            self.callback_wrapper.ignore_errors = ignore
-        elif ignore:
-            self.add_callback()
-            self.callback_wrapper.ignore_errors = ignore
+        self.add_callback()
+        self.callback_wrapper.ignore_errors = ignore
 
     def gen_kwargs(self, obj, **kwargs):
         return kwargs
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        if hasattr(self, 'callback_wrapper'):
-            kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
@@ -200,8 +278,7 @@ class AsyncModule(Module):
 
     async def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        if hasattr(self, 'callback_wrapper'):
-            kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return await self._process(obj, **kwargs)
 
@@ -338,6 +415,29 @@ class ModuleList(Module):
         self.modules = []
         self.register_modules(modules)
 
+    @staticmethod
+    def _check(name, module, include=(), exclude=()):
+        flag = True
+        if include:
+            for cls in include:
+                if isinstance(cls, str):
+                    if name == cls:
+                        break
+                elif isinstance(module, cls):
+                    break
+            else:
+                flag = False
+
+        if exclude:
+            for cls in exclude:
+                if isinstance(cls, str):
+                    if name == cls:
+                        flag = False
+                elif isinstance(module, cls):
+                    flag = False
+
+        return flag
+
     def register_modules(self, modules):
         for module in modules:
             self.register_module(module)
@@ -352,7 +452,7 @@ class ModuleList(Module):
             name = type(module).__name__
         self.modules.append((name, module))
 
-    def replace_module(self, module, name=None, count=None):
+    def replace_module(self, module, name=None, count=None, recursive=False):
         if name:
             pass
         elif hasattr(module, 'name'):
@@ -360,13 +460,17 @@ class ModuleList(Module):
         else:
             name = type(module).__name__
 
+        count = count or float('inf')
         c = 0
         for i, (n, m) in enumerate(self.modules):
             if n == name:
                 self.modules[i] = (name, module)
                 c += 1
-                if count and c >= count:
+                if c >= count:
                     break
+
+            if recursive and isinstance(m, ModuleList):
+                m.replace_module(module, name, count - c, recursive)
 
     def get_module(self, name: str | int, default=None, recursive=False) -> Module:
         if isinstance(name, int):
@@ -384,6 +488,21 @@ class ModuleList(Module):
                                 return m
 
         return default
+
+    def get_modules(self, include=(), exclude=(), recursive=False):
+        modules = []
+        if self._check(self.name, self, include, exclude):
+            modules.append(self)
+
+        for name, module in self.modules:
+            if isinstance(module, ModuleList):
+                if recursive:
+                    modules += module.get_modules(include, exclude, recursive)
+            else:
+                if self._check(name, module, include, exclude):
+                    modules.append(module)
+
+        return modules
 
     def module_control(self, name, module, mask_modules=(), apply_modules=(), start_module=None, end_module=None, **kwargs):
         """control the module is masked or applied,
@@ -428,14 +547,17 @@ class ModuleList(Module):
         mask_flag[start:end] = [False] * (end - start)
         return mask_flag, is_shoot
 
-    def apply_setting(self, obj, func_name):
-        setattr(self, func_name, obj)
+    def apply_setting(self, obj, func_name, include=(), exclude=(), recursive=False):
+        if self._check(self.name, self, include, exclude):
+            setattr(self, func_name, obj)
 
         for name, module in self.modules:
             if isinstance(module, (Sequential, Pipeline)):
-                module.apply_setting(obj, func_name)
+                if recursive:
+                    module.apply_setting(obj, func_name, include, exclude, recursive)
             else:
-                setattr(module, func_name, obj)
+                if self._check(name, module, include, exclude):
+                    setattr(module, func_name, obj)
 
     def logger_(self, logger=None):
         self.apply_setting(log_utils.get_logger(logger), 'logger')
@@ -453,6 +575,25 @@ class ModuleList(Module):
         module = self.get_module(key)
         assert module is not None, f'"{key}" is not the module of {self.name}'
         return module
+
+    def to_structure_dict(self):
+        d = super().to_structure_dict()
+        modules = []
+        for name, module in self.modules:
+            modules.append(module.to_structure_dict())
+
+        d['modules'] = modules
+        return d
+
+    def to_structure_array(self):
+        structure_array, cfgs = super().to_structure_array()
+        modules = []
+        for name, module in self.modules:
+            structure_array_, cfgs_ = module.to_structure_array()
+            modules.append(structure_array_)
+            cfgs.update(cfgs_)
+        structure_array = (structure_array, modules)
+        return structure_array, cfgs
 
 
 @base_module_tables.add_register()
@@ -670,12 +811,12 @@ class Sequential(ModuleList):
     skip_exception_return = False
     cache_all_results = True
 
-    iter_callback_wrapper_ins = CallbackWrapper
+    iter_callback_wrapper_ins = callbacks.CallbackWrapper
     iter_callback_wrapper_kwargs = dict()
 
     pbar_visualize = False
 
-    def __init__(self, *modules, force_add_input=True, force_add_output=True, **kwargs):
+    def __init__(self, *modules, force_add_input=True, force_add_output=True, iter_success_callbacks=None, iter_failure_callbacks=None, **kwargs):
         if force_add_input and not isinstance(modules[0], BaseSequentialInput):
             modules = [BaseSequentialInput()] + list(modules)
 
@@ -684,29 +825,38 @@ class Sequential(ModuleList):
 
         super().__init__(*modules, **kwargs)
 
+        if iter_success_callbacks:
+            self.iter_callback_wrapper_kwargs = configs.ConfigObjParse.merge_dict(self.iter_callback_wrapper_kwargs, dict(success_callbacks=iter_success_callbacks))
+
+        if iter_failure_callbacks:
+            self.iter_callback_wrapper_kwargs = configs.ConfigObjParse.merge_dict(self.iter_callback_wrapper_kwargs, dict(failure_callbacks=iter_failure_callbacks))
+
         # note, not necessary to use judgment statements, but for the convenience of debugging
+        self.iter_callback_wrapper = callbacks.FakeCallbackWrapper()
         if self.iter_callback_wrapper_kwargs:
             self.add_iter_callback()
 
+    def __call__(self, obj, **kwargs):
+        # todo, `gen_kwargs` does not be wrapped in callback
+        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs.update(self.iter_callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = self.gen_kwargs(obj, **kwargs)
+        return self._process(obj, **kwargs)
+
     def add_iter_callback(self):
-        self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
-        self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
-        self._iter = self.iter_callback_wrapper.on_process_start_end_wrap(self._iter)
+        if isinstance(self.iter_callback_wrapper, callbacks.FakeCallbackWrapper):
+            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
+            self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
+            self._iter = self.iter_callback_wrapper.on_process_start_end_wrap(self._iter)
 
     @property
     def ignore_iter_errors(self):
-        if hasattr(self, 'iter_callback_wrapper'):
-            return self.iter_callback_wrapper.ignore_errors
-        else:
-            return False
+        return self.iter_callback_wrapper.ignore_errors
 
     @ignore_iter_errors.setter
     def ignore_iter_errors(self, ignore):
-        if hasattr(self, 'iter_callback_wrapper'):
-            self.iter_callback_wrapper.ignore_errors = ignore
-        elif ignore:
-            self.add_iter_callback()
-            self.iter_callback_wrapper.ignore_errors = ignore
+        self.add_iter_callback()
+        self.iter_callback_wrapper.ignore_errors = ignore
 
     def ignore_iter_errors_(self, ignore=True):
         self.apply_setting(ignore, 'ignore_iter_errors')
@@ -718,7 +868,8 @@ class Sequential(ModuleList):
         _, input_module = self.modules[0]
         _, output_module = self.modules[-1]
         results = []
-        iter_objs = input_module(obj, **kwargs)
+        # todo, more elegant implementation?
+        iter_objs = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
         for iter_obj in iter_objs:
@@ -728,7 +879,7 @@ class Sequential(ModuleList):
             if self.cache_all_results:
                 results.append(iter_obj)
 
-        return output_module(results, raw_obj=obj, **kwargs)
+        return self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, **kwargs)
 
     def _iter_result(self, iter_obj, **kwargs):
         return self._iter_module(iter_obj, **kwargs)
@@ -748,11 +899,26 @@ class Sequential(ModuleList):
 class IterSequential(Sequential):
     """Each data result will yield out"""
 
+    def add_callback(self):
+        super().add_callback()
+        self.logger.warning('There would be something wrong to use `callback_wrapper` in IterSequential. Using `iter_callback_wrapper` instead.')
+
+    def add_iter_callback(self):
+        if isinstance(self.iter_callback_wrapper, callbacks.FakeCallbackWrapper):
+            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
+            self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
+            self._iter = self.iter_callback_wrapper.on_process_start_wrap(self._iter)
+
     def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
         _, output_module = self.modules[-1]
         results = []
-        iter_objs = input_module(obj, **kwargs)
+
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, **kwargs)
+        if flag:
+            yield iter_objs
+            return
+
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
         for iter_obj in iter_objs:
@@ -764,7 +930,33 @@ class IterSequential(Sequential):
 
             yield iter_obj
 
-        return output_module(results, raw_obj=obj, **kwargs)
+        obj = self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, **kwargs)
+        obj = self.iter_callback_wrapper.on_process_end(lambda obj, **kwargs: obj, obj, **kwargs)
+        return obj
+
+
+@base_module_tables.add_register()
+class AsyncIterSequential(IterSequential):
+    def __init__(self, *modules, **kwargs):
+        super().__init__(*modules, force_add_input=False, force_add_output=False, **kwargs)
+
+    async def _iter(self, obj, **kwargs):
+        _, input_module = self.modules[0]
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, **kwargs)
+        if flag:
+            yield iter_objs
+            return
+
+        if self.pbar_visualize:
+            iter_objs = asyncio.tqdm(iter_objs, desc=self.name)
+        async for iter_obj in iter_objs:
+            iter_obj = self._iter_result(iter_obj, **kwargs)
+            if self.skip_exception_return and isinstance(iter_obj, Exception):
+                continue
+
+            yield iter_obj
+
+        self.iter_callback_wrapper.on_process_end(lambda obj, **kwargs: obj, obj, **kwargs)
 
 
 @base_module_tables.add_register()

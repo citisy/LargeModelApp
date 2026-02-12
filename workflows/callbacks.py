@@ -29,7 +29,7 @@ class Module:
         return self.name
 
 
-class BaseCallbackWrapper:
+class FakeCallbackWrapper:
     ignore_errors = False
 
     def __init__(self, **kwargs):
@@ -52,6 +52,15 @@ class BaseCallbackWrapper:
 
     def on_process_end_wrap(self, func):
         return func
+
+    def on_process_start(self, func, obj, **kwargs):
+        return func(obj, **kwargs)
+
+    def on_process(self, func, obj, **kwargs):
+        return func(obj, **kwargs)
+
+    def on_process_end(self, func, obj, **kwargs):
+        return func(obj, **kwargs)
 
 
 class CallbackWrapper:
@@ -128,6 +137,12 @@ class CallbackWrapper:
             if name_ == name:
                 return callback
 
+    def replace_success_callback(self, callback: Module, name=None):
+        name = name or callback.name
+        for i, (name_, _) in enumerate(self.success_callbacks):
+            if name_ == name:
+                self.success_callbacks[i] = (name, callback)
+
     def register_failure_callbacks(self, callbacks: List[Module]):
         for callback in callbacks:
             self.register_failure_callback(callback)
@@ -146,6 +161,12 @@ class CallbackWrapper:
         for name_, callback in self.failure_callbacks:
             if name_ == name:
                 return callback
+
+    def replace_failure_callback(self, callback: Module, name=None):
+        name = name or callback.name
+        for i, (name_, _) in enumerate(self.failure_callbacks):
+            if name_ == name:
+                self.failure_callbacks[i] = (name, callback)
 
     def gen_kwargs(self, obj, **kwargs):
         return dict(
@@ -167,32 +188,32 @@ class CallbackWrapper:
         return partial(self.on_process_start, func)
 
     def on_process_start(self, func, obj, **kwargs):
-        for name, callback in self.success_callbacks:
-            if hasattr(callback, 'on_process_start'):
-                callback.on_process_start(obj, module_name=self.module_name, **kwargs)
-
-        for name, callback in self.failure_callbacks:
-            if hasattr(callback, 'on_process_start'):
-                callback.on_process_start(obj, module_name=self.module_name, **kwargs)
-
+        self.on_success(obj, callback_step='on_process_start', **kwargs)
+        self.on_failure(obj, callback_step='on_process_start', **kwargs)
         return func(obj, **kwargs)
 
     def on_process_wrap(self, func):
         return partial(self.on_process, func)
 
-    def on_process(self, func, obj, **kwargs):
+    def on_process(self, func, obj, return_exceptions_flag=False, **kwargs):
         try:
             obj = func(obj, **kwargs)
 
-            self.on_success(obj, **kwargs)
-            return obj
+            self.on_success(obj, callback_step='on_process', **kwargs)
+            if return_exceptions_flag:
+                return obj, False
+            else:
+                return obj
         except self.ignore_errors_type as e:
-            obj = self.on_failure(e, obj, **kwargs)
+            obj = self.on_failure(obj, e=e, callback_step='on_process', **kwargs)
 
             if isinstance(e, self.raise_errors_type):
                 raise e
             elif self.ignore_errors:
-                return obj
+                if return_exceptions_flag:
+                    return obj, True
+                else:
+                    return obj
             else:
                 raise e
 
@@ -202,29 +223,25 @@ class CallbackWrapper:
     def on_process_end(self, func, obj, **kwargs):
         obj = func(obj, **kwargs)
 
-        for name, callback in self.success_callbacks:
-            if hasattr(callback, 'on_process_end'):
-                callback.on_process_end(obj, module_name=self.module_name, **kwargs)
-
-        for name, callback in self.failure_callbacks:
-            if hasattr(callback, 'on_process_end'):
-                callback.on_process_end(obj, module_name=self.module_name, **kwargs)
-
+        self.on_success(obj, callback_step='on_process_end', **kwargs)
+        self.on_failure(obj, callback_step='on_process_end', **kwargs)
         return obj
 
-    def on_failure(self, e: Exception, obj, **kwargs):
-        parse_obj = self.parse_exception(e, obj, **kwargs)
+    def on_failure(self, obj, e: Exception = None, callback_step='on_process', **kwargs):
+        parse_obj = None if e is None else self.parse_exception(e, obj, **kwargs)
         for name, callback in self.failure_callbacks:
-            callback(obj, e=e, parse_obj=parse_obj, module_name=self.module_name, **kwargs)
+            if hasattr(callback, callback_step):
+                getattr(callback, callback_step)(obj, e=e, parse_obj=parse_obj, module_name=self.module_name, **kwargs)
         return parse_obj
 
     def parse_exception(self, e: Exception, obj, *args, **kwargs):
         """return something specially to transfer to all failure callbacks and to replace the normal returns"""
         return e
 
-    def on_success(self, obj, **kwargs):
+    def on_success(self, obj, callback_step='on_process', **kwargs):
         for name, callback in self.success_callbacks:
-            callback(obj, module_name=self.module_name, **kwargs)
+            if hasattr(callback, callback_step):
+                getattr(callback, callback_step)(obj, module_name=self.module_name, **kwargs)
         return obj
 
 

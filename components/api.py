@@ -2,6 +2,7 @@ import os
 import time
 
 import fastapi  # noqa
+import pydantic
 
 from utils import web_app, log_utils, converter
 from workflows import skeletons
@@ -33,9 +34,6 @@ def add_webui(
         app,
         model_configs=dict(),
         webui_app_func=None,
-        sub_app=None,
-        router_path=None,
-        api_configs=None,
         **router_kwargs
 ):
     import gradio as gr
@@ -166,9 +164,34 @@ def simple_get_router(
         return ret
 
 
+def stream_post_router(
+        app: 'FastAPI' or 'APIRouter',
+        router_path,
+        api_path,
+        func=None,
+        request_template: 'pydantic.BaseModel()' = None,
+        func_configs: dict = {},
+        method_configs: dict = {},
+        **ignore_kwargs
+):
+    from fastapi.responses import StreamingResponse
+
+    request_template = dict if request_template is None else request_template
+
+    @app.post(api_path, **method_configs)
+    async def chat_stream(data: request_template):
+        if isinstance(data, pydantic.BaseModel):
+            data = data.dict(exclude_none=True)
+
+        return StreamingResponse(
+            func(data, **func_configs),
+            media_type="text/plain; charset=utf-8"
+        )
+
+
 def create_app(configs):
-    log_configs = configs.get('Log', {})
-    log_utils.logger_init(**log_configs)
+    log_config = configs.get('Log', {})
+    log_utils.logger_init(**log_config)
     logger = log_utils.get_logger()
 
     api_configs = configs.get('Api', {})

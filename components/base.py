@@ -1,3 +1,5 @@
+import json
+
 from workflows import exceptions, skeletons
 from . import db, _callbacks, template
 
@@ -80,6 +82,50 @@ class BaseModelWithMysqlDb(BaseLogPipeline, BaseTaskPipeline, db.MysqlDbModule):
         ret.update(obj['kwargs'])
         obj['kwargs'] = ret
         return ret
+
+
+class AsyncBaseLogSequential(skeletons.AsyncIterSequential):
+    err_response = template.BaseErrResponse
+
+    def __init__(self, *modules, **kwargs):
+        super().__init__(
+            *modules,
+            iter_success_callbacks=[_callbacks.TimeLoggerCallback()],
+            iter_failure_callbacks=[_callbacks.StdErrCallback()],
+            **kwargs
+        )
+        self.ignore_iter_errors = True
+        self.iter_callback_wrapper.parse_exception = self.parse_exception
+
+    def parse_exception(self, e, obj, *args, task_id=None, **kwargs) -> str:
+        if isinstance(e, exceptions._BaseException):
+            ret = self.err_response(
+                task_id=task_id,
+                code=e.code,
+                message=e.message,
+            ).dict()
+        else:
+            ret = self.err_response(
+                task_id=task_id,
+                code=500,
+                message=f'{type(e).__name__}: {e}',
+            ).dict()
+        ret = json.dumps(ret, ensure_ascii=False)
+        return ret
+
+
+class AsyncBaseTaskSequential(skeletons.AsyncIterSequential):
+    def gen_kwargs(self, obj, **kwargs):
+        kwargs.update({k: v for k, v in obj.items() if k != 'kwargs'})
+        return kwargs
+
+    def on_process_start(self, obj, task_id=None, **kwargs):
+        self.logger.info(f'{self.name}[{task_id}] receive request!')
+        return obj['kwargs']
+
+
+class AsyncBaseModel(AsyncBaseLogSequential, AsyncBaseTaskSequential):
+    pass
 
 
 class BaseCallbackModule(skeletons.Module):

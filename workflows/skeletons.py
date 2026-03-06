@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from typing import List, Dict, Optional
 
 from tqdm import tqdm, asyncio
@@ -224,7 +225,7 @@ class Module:
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
@@ -360,8 +361,20 @@ class RetryModule(Module):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.retry = op_utils.Retry(stdout_method=self.logger.info, count=self.retry_count, wait=self.retry_wait)
-        self._process = self.retry.add_try(err_type=self.err_type, raise_type=self.raise_type)(self._process)
+        self.retry = op_utils.Retry(count=self.retry_count, wait=self.retry_wait)
+        self._process = self.retry.add_try(err_context=self.err_context, err_type=self.err_type, raise_type=self.raise_type)(self._process)
+
+    @contextmanager
+    def err_context(self, e=None, i=None, **kwargs):
+        msg = '{name}[{task_id}] error occur: "{e}", sleep {wait} seconds, and then retry!'
+        msg = msg.format(e=e, wait=self.retry_wait, name=self.name, **kwargs)
+        self.logger.error(msg)
+        try:
+            yield
+        finally:
+            msg = '{name}[{task_id}] {i}th process!'
+            msg = msg.format(i=i + 2, name=self.name, **kwargs)
+            self.logger.info(msg)
 
 
 @base_module_tables.add_register()
@@ -838,14 +851,14 @@ class Sequential(ModuleList):
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
-        kwargs.update(self.iter_callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.iter_callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
     def add_iter_callback(self):
         if isinstance(self.iter_callback_wrapper, callbacks.FakeCallbackWrapper):
-            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
+            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(module_name=self.name, **self.iter_callback_wrapper_kwargs)
             self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
             self._iter = self.iter_callback_wrapper.on_process_start_end_wrap(self._iter)
 
@@ -905,7 +918,7 @@ class IterSequential(Sequential):
 
     def add_iter_callback(self):
         if isinstance(self.iter_callback_wrapper, callbacks.FakeCallbackWrapper):
-            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(**self.iter_callback_wrapper_kwargs)
+            self.iter_callback_wrapper = self.iter_callback_wrapper_ins(module_name=self.name, **self.iter_callback_wrapper_kwargs)
             self._iter_result = self.iter_callback_wrapper.on_process_wrap(self._iter_result)
             self._iter = self.iter_callback_wrapper.on_process_start_wrap(self._iter)
 

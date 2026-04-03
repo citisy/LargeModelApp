@@ -16,6 +16,7 @@ class Module:
     apply = True
     allow_start = False  # allow the module to be started in a workflow or not
     allow_end = False  # allow the module to be ended in a workflow or not
+    inplace = False
 
     callback_wrapper_ins = callbacks.CallbackWrapper
     callback_wrapper_kwargs = dict()
@@ -225,13 +226,15 @@ class Module:
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
     def _process(self, obj, **kwargs):
         for node in self._nodes:
-            obj = node(obj, **kwargs)  # noqa
+            _obj = node(obj, **kwargs)  # noqa
+            if not self.inplace:
+                obj = _obj
 
         return obj
 
@@ -279,13 +282,15 @@ class AsyncModule(Module):
 
     async def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
         kwargs = self.gen_kwargs(obj, **kwargs)
         return await self._process(obj, **kwargs)
 
     async def _process(self, obj, **kwargs):
         for node in self._nodes:
-            obj = await node(obj, **kwargs)  # noqa
+            _obj = await node(obj, **kwargs)  # noqa
+            if not self.inplace:
+                obj = _obj
 
         return obj
 
@@ -621,9 +626,12 @@ class Pipeline(ModuleList):
             if self.module_control(name, module, **kwargs):
                 continue
 
-            obj = module(obj, **kwargs)
-            if isinstance(obj, Exception):
-                raise obj
+            _obj = module(obj, **kwargs)
+            if isinstance(_obj, Exception):
+                raise _obj
+
+            if not self.inplace:
+                obj = _obj
 
         return obj
 
@@ -726,10 +734,13 @@ class SwitchPipeline(Pipeline):
         if self.module_control(name, module, **kwargs):
             return obj
 
-        obj = module(obj, **kwargs)
+        _obj = module(obj, **kwargs)
 
-        if isinstance(obj, Exception):
-            raise obj
+        if isinstance(_obj, Exception):
+            raise _obj
+
+        if not self.inplace:
+            obj = _obj
 
         return obj
 
@@ -759,6 +770,7 @@ class MultiProcessPipeline(Pipeline):
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
+    inplace = True
 
     def on_process(self, obj, **kwargs):
         from multiprocessing.pool import Pool
@@ -789,6 +801,7 @@ class MultiThreadPipeline(Pipeline):
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
+    inplace = True
 
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
@@ -851,8 +864,8 @@ class Sequential(ModuleList):
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
-        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.iter_callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.iter_callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
@@ -902,9 +915,12 @@ class Sequential(ModuleList):
             if self.module_control(name, module, **kwargs):
                 continue
 
-            iter_obj = module(iter_obj, **kwargs)
-            if isinstance(iter_obj, Exception):
-                raise iter_obj
+            _iter_obj = module(iter_obj, **kwargs)
+            if isinstance(_iter_obj, Exception):
+                raise _iter_obj
+
+            if not self.inplace:
+                iter_obj = _iter_obj
         return iter_obj
 
 
@@ -1007,23 +1023,24 @@ class BatchSequential(Sequential):
         iter_objs = input_module(obj, **kwargs)
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
+        batch_iter_obj = []
         for iter_obj in iter_objs:
             i += 1
 
-            iter_objs.append(iter_obj)
+            batch_iter_obj.append(iter_obj)
             if i < self.batch_size:
                 continue
 
-            _iter_objs = self._iter_result(iter_objs, **kwargs)
+            _iter_objs = self._iter_result(batch_iter_obj, **kwargs)
 
             if not (self.skip_exception_return and isinstance(_iter_objs, Exception)) and self.cache_all_results:
                 results += _iter_objs
 
             i = 0
-            iter_objs = []
+            batch_iter_obj = []
 
-        if iter_objs:
-            _iter_objs = self._iter_result(iter_objs, **kwargs)
+        if batch_iter_obj:
+            _iter_objs = self._iter_result(batch_iter_obj, **kwargs)
             if not (self.skip_exception_return and isinstance(_iter_objs, Exception)) and self.cache_all_results:
                 results += _iter_objs
 
@@ -1037,6 +1054,7 @@ class MultiProcessModuleSequential(Sequential):
     """
 
     n_pool = None
+    inplace = True
 
     def _iter_module(self, iter_obj, **kwargs):
         from multiprocessing.pool import Pool
@@ -1127,15 +1145,16 @@ class MultiThreadModuleSequential(Sequential):
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
+    inplace = True
 
     def __init__(self, *modules, **kwargs):
-        super().__init__(*modules, **kwargs)
+        super().__init__(*modules, force_add_input=False, force_add_output=False, **kwargs)
         from concurrent.futures import ThreadPoolExecutor
         self.pool = ThreadPoolExecutor(max_workers=self.n_pool)
 
     def _iter_module(self, iter_obj, **kwargs):
         threads = []
-        for name, module in self.modules[1:-1]:
+        for name, module in self.modules:
             if self.module_control(name, module, **kwargs):
                 continue
 

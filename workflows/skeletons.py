@@ -16,7 +16,6 @@ class Module:
     apply = True
     allow_start = False  # allow the module to be started in a workflow or not
     allow_end = False  # allow the module to be ended in a workflow or not
-    inplace = False
 
     callback_wrapper_ins = callbacks.CallbackWrapper
     callback_wrapper_kwargs = dict()
@@ -232,9 +231,7 @@ class Module:
 
     def _process(self, obj, **kwargs):
         for node in self._nodes:
-            _obj = node(obj, **kwargs)  # noqa
-            if not self.inplace:
-                obj = _obj
+            obj = node(obj, **kwargs)  # noqa
 
         return obj
 
@@ -282,15 +279,13 @@ class AsyncModule(Module):
 
     async def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
+        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return await self._process(obj, **kwargs)
 
     async def _process(self, obj, **kwargs):
         for node in self._nodes:
-            _obj = await node(obj, **kwargs)  # noqa
-            if not self.inplace:
-                obj = _obj
+            obj = await node(obj, **kwargs)  # noqa
 
         return obj
 
@@ -501,7 +496,7 @@ class ModuleList(Module):
                 if recursive:
                     for _name, module in self.modules:
                         if isinstance(module, ModuleList):
-                            m = module.get_module(name, recursive)
+                            m = module.get_module(name, default, recursive)
                             if m:
                                 return m
 
@@ -626,12 +621,9 @@ class Pipeline(ModuleList):
             if self.module_control(name, module, **kwargs):
                 continue
 
-            _obj = module(obj, **kwargs)
-            if isinstance(_obj, Exception):
-                raise _obj
-
-            if not self.inplace:
-                obj = _obj
+            obj = module(obj, **kwargs)
+            if isinstance(obj, Exception):
+                raise obj
 
         return obj
 
@@ -734,13 +726,10 @@ class SwitchPipeline(Pipeline):
         if self.module_control(name, module, **kwargs):
             return obj
 
-        _obj = module(obj, **kwargs)
+        obj = module(obj, **kwargs)
 
-        if isinstance(_obj, Exception):
-            raise _obj
-
-        if not self.inplace:
-            obj = _obj
+        if isinstance(obj, Exception):
+            raise obj
 
         return obj
 
@@ -770,7 +759,6 @@ class MultiProcessPipeline(Pipeline):
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
-    inplace = True
 
     def on_process(self, obj, **kwargs):
         from multiprocessing.pool import Pool
@@ -801,7 +789,6 @@ class MultiThreadPipeline(Pipeline):
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
-    inplace = True
 
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, **kwargs)
@@ -915,12 +902,9 @@ class Sequential(ModuleList):
             if self.module_control(name, module, **kwargs):
                 continue
 
-            _iter_obj = module(iter_obj, **kwargs)
-            if isinstance(_iter_obj, Exception):
-                raise _iter_obj
-
-            if not self.inplace:
-                iter_obj = _iter_obj
+            iter_obj = module(iter_obj, **kwargs)
+            if isinstance(iter_obj, Exception):
+                raise iter_obj
         return iter_obj
 
 
@@ -1054,7 +1038,6 @@ class MultiProcessModuleSequential(Sequential):
     """
 
     n_pool = None
-    inplace = True
 
     def _iter_module(self, iter_obj, **kwargs):
         from multiprocessing.pool import Pool
@@ -1145,7 +1128,6 @@ class MultiThreadModuleSequential(Sequential):
     each module will have the same inputs,
     use inplace mode to return the outputs"""
     n_pool = None
-    inplace = True
 
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, force_add_input=False, force_add_output=False, **kwargs)

@@ -1,3 +1,4 @@
+import threading
 import time
 import traceback
 from functools import partial
@@ -104,6 +105,7 @@ class CallbackWrapper:
     ignore_errors_type = Exception
     raise_errors_type = type(None)
     add_std_err_callback = True
+    async_callback = False
 
     def __init__(self, success_callbacks=None, failure_callbacks=None, module_name=None, **kwargs):
         self.success_callbacks = []
@@ -230,8 +232,12 @@ class CallbackWrapper:
     def on_failure(self, obj, e: Exception = None, callback_step='on_process', **kwargs):
         parse_obj = None if e is None else self.parse_exception(e, obj, **kwargs)
         for name, callback in self.failure_callbacks:
+            func = getattr(callback, callback_step)
             if hasattr(callback, callback_step):
-                getattr(callback, callback_step)(obj, e=e, parse_obj=parse_obj, module_name=self.module_name, **kwargs)
+                if self.async_callback:
+                    threading.Thread(target=func, kwargs=dict(e=e, parse_obj=parse_obj, module_name=self.module_name, **kwargs)).start()
+                else:
+                    func(obj, e=e, parse_obj=parse_obj, module_name=self.module_name, **kwargs)
         return parse_obj
 
     def parse_exception(self, e: Exception, obj, *args, **kwargs):
@@ -241,7 +247,11 @@ class CallbackWrapper:
     def on_success(self, obj, callback_step='on_process', **kwargs):
         for name, callback in self.success_callbacks:
             if hasattr(callback, callback_step):
-                getattr(callback, callback_step)(obj, module_name=self.module_name, **kwargs)
+                func = getattr(callback, callback_step)
+                if self.async_callback:
+                    threading.Thread(target=func, kwargs=dict(module_name=self.module_name, **kwargs)).start()
+                else:
+                    func(obj, module_name=self.module_name, **kwargs)
         return obj
 
 

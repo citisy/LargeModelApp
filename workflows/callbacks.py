@@ -39,19 +39,19 @@ class FakeCallbackWrapper:
     def gen_kwargs(self, obj, **kwargs):
         return {}
 
-    def process_wrap(self, func):
+    def process_wrap(self, func, **kwargs):
         return func
 
-    def on_process_start_end_wrap(self, func):
+    def on_process_start_end_wrap(self, func, **kwargs):
         return func
 
-    def on_process_start_wrap(self, func):
+    def on_process_start_wrap(self, func, **kwargs):
         return func
 
-    def on_process_wrap(self, func):
+    def on_process_wrap(self, func, **kwargs):
         return func
 
-    def on_process_end_wrap(self, func):
+    def on_process_end_wrap(self, func, **kwargs):
         return func
 
     def on_process_start(self, func, obj, **kwargs):
@@ -175,27 +175,27 @@ class CallbackWrapper:
             callback_status={name: None for name, _ in self.success_callbacks + self.failure_callbacks}
         )
 
-    def process_wrap(self, func):
-        _func = self.on_process_start_wrap(func)
-        _func = self.on_process_wrap(_func)
-        _func = self.on_process_end_wrap(_func)
+    def process_wrap(self, func, **kwargs):
+        _func = self.on_process_start_wrap(func, **kwargs)
+        _func = self.on_process_wrap(_func, **kwargs)
+        _func = self.on_process_end_wrap(_func, **kwargs)
         return _func
 
-    def on_process_start_end_wrap(self, func):
-        _func = self.on_process_start_wrap(func)
-        _func = self.on_process_end_wrap(_func)
+    def on_process_start_end_wrap(self, func, **kwargs):
+        _func = self.on_process_start_wrap(func, **kwargs)
+        _func = self.on_process_end_wrap(_func, **kwargs)
         return _func
 
-    def on_process_start_wrap(self, func):
-        return partial(self.on_process_start, func)
+    def on_process_start_wrap(self, func, **kwargs):
+        return partial(self.on_process_start, func, **kwargs)
 
     def on_process_start(self, func, obj, **kwargs):
         self.on_success(obj, callback_step='on_process_start', **kwargs)
         self.on_failure(obj, callback_step='on_process_start', **kwargs)
         return func(obj, **kwargs)
 
-    def on_process_wrap(self, func):
-        return partial(self.on_process, func)
+    def on_process_wrap(self, func, **kwargs):
+        return partial(self.on_process, func, **kwargs)
 
     def on_process(self, func, obj, return_exceptions_flag=False, **kwargs):
         try:
@@ -219,8 +219,8 @@ class CallbackWrapper:
             else:
                 raise e
 
-    def on_process_end_wrap(self, func):
-        return partial(self.on_process_end, func)
+    def on_process_end_wrap(self, func, **kwargs):
+        return partial(self.on_process_end, func, **kwargs)
 
     def on_process_end(self, func, obj, **kwargs):
         obj = func(obj, **kwargs)
@@ -296,8 +296,9 @@ class TqdmVisCallback(Module):
         # set a very small delay to avoid printing the pbar when initialization
         callback_status[self.name] = tqdm(delay=1e-9)
 
-    def on_process(self, obj: dict, callback_status={}, **kwargs):
-        callback_status[self.name].update()
+    def on_process(self, obj: dict, callback_status={}, sub_callback_step='on_iter', **kwargs):
+        if sub_callback_step == 'on_iter':
+            callback_status[self.name].update()
 
     def on_process_end(self, obj, callback_status={}, **kwargs):
         callback_status[self.name].close()

@@ -226,7 +226,7 @@ class Module:
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
@@ -282,7 +282,7 @@ class AsyncModule(Module):
 
     async def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs.update(self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return await self._process(obj, **kwargs)
 
@@ -843,7 +843,7 @@ class Sequential(ModuleList):
     pbar_visualize = False
 
     def __init__(self, *modules, force_add_input=True, force_add_output=True, iter_success_callbacks=None, iter_failure_callbacks=None, **kwargs):
-        if force_add_input and not isinstance(modules[0], BaseSequentialInput):
+        if force_add_input and (not len(modules) or not isinstance(modules[0], BaseSequentialInput)):
             modules = [BaseSequentialInput()] + list(modules)
 
         if force_add_output and not isinstance(modules[-1], BaseSequentialOutput):
@@ -864,8 +864,8 @@ class Sequential(ModuleList):
 
     def __call__(self, obj, **kwargs):
         # todo, `gen_kwargs` does not be wrapped in callback
-        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
-        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.iter_callback_wrapper.gen_kwargs(obj, **kwargs), inplace=True)
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.callback_wrapper.gen_kwargs(obj, **kwargs))
+        kwargs = configs.ConfigObjParse.merge_dict(kwargs, self.iter_callback_wrapper.gen_kwargs(obj, **kwargs))
         kwargs = self.gen_kwargs(obj, **kwargs)
         return self._process(obj, **kwargs)
 
@@ -898,6 +898,7 @@ class Sequential(ModuleList):
         iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_strat', **kwargs)
         if flag:
             return iter_objs
+        kwargs.update(raw_obj=obj)
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
         for iter_obj in iter_objs:
@@ -907,7 +908,7 @@ class Sequential(ModuleList):
             if self.cache_all_results:
                 results.append(iter_obj)
 
-        return self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, sub_callback_step='on_iter_end', **kwargs)
+        return self.iter_callback_wrapper.on_process(output_module, results, sub_callback_step='on_iter_end', **kwargs)
 
     def _iter_result(self, iter_obj, **kwargs):
         return self._iter_module(iter_obj, **kwargs)
@@ -1032,6 +1033,7 @@ class BatchSequential(Sequential):
             return iter_objs
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
+        kwargs.update(raw_obj=obj)
         batch_iter_obj = []
         for iter_obj in iter_objs:
             i += 1
@@ -1053,7 +1055,7 @@ class BatchSequential(Sequential):
             if not (self.skip_exception_return and isinstance(_iter_objs, Exception)) and self.cache_all_results:
                 results += _iter_objs
 
-        return self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, sub_callback_step='on_iter_end', **kwargs)
+        return self.iter_callback_wrapper.on_process(output_module, results, sub_callback_step='on_iter_end', **kwargs)
 
 
 @base_module_tables.add_register()

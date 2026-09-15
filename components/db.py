@@ -3,7 +3,7 @@ import os
 import pymysql
 
 from utils import os_lib, op_utils
-from workflows import callbacks, skeletons
+from workflows import callbacks, exceptions, skeletons
 
 
 class MysqlDbModule(skeletons.Module):
@@ -149,11 +149,9 @@ class MySqlDbErrCallback(callbacks.Module):
 
         status_key = status.get('status_key')
         if status_key is not None:
-            if hasattr(parse_obj, 'status'):
-                data[status_key] = parse_obj.status
-            elif hasattr(parse_obj, 'code'):
+            if isinstance(parse_obj, exceptions._BaseException):
                 data[status_key] = parse_obj.code
-            else:
+            elif 'error_status' in status:
                 data[status_key] = status['error_status']
 
         global_caches = status['global_caches']

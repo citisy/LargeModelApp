@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from functools import wraps
 from typing import List, Dict, Optional
 
 from tqdm import tqdm, asyncio
@@ -47,7 +48,7 @@ class Module:
             self.callback_wrapper_kwargs = configs.ConfigObjParse.merge_dict(self.callback_wrapper_kwargs, dict(failure_callbacks=failure_callbacks))
 
         # note, not necessary to use judgment statements, but for the convenience of debugging
-        self.callback_wrapper = callbacks.FakeCallbackWrapper()
+        self.callback_wrapper: Optional[callbacks.CallbackWrapper] = callbacks.FakeCallbackWrapper()
         if self.callback_wrapper_kwargs:
             self.add_callback()
 
@@ -370,8 +371,9 @@ class RetryModule(Module):
         self._process = self.retry.add_try(err_context=self.err_context, err_type=self.err_type, raise_type=self.raise_type)(self._process)
 
     @contextmanager
-    def err_context(self, e=None, i=None, **kwargs):
+    def err_context(self, *args, e=None, i=None, **kwargs):
         msg = '{name}[{task_id}] error occur: "{e}", sleep {wait} seconds, and then retry!'
+        kwargs.setdefault('task_id', None)
         msg = msg.format(e=e, wait=self.retry_wait, name=self.name, **kwargs)
         self.logger.error(msg)
         try:
@@ -672,7 +674,7 @@ class RetryPipeline(Pipeline, RetryModule):
 
 
 @base_module_tables.add_register()
-class IgnoreExceptionPipeline(Pipeline, RetryModule):
+class IgnoreExceptionPipeline(Pipeline, IgnoreExceptionModule):
     """
     Usages:
         class E(Module):
@@ -895,10 +897,22 @@ class Sequential(ModuleList):
         _, output_module = self.modules[-1]
         results = []
         # todo, more elegant implementation?
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_strat', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_strat'
+        )
+
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             return iter_objs
-        kwargs.update(raw_obj=obj)
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
+
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
         for iter_obj in iter_objs:
@@ -908,7 +922,13 @@ class Sequential(ModuleList):
             if self.cache_all_results:
                 results.append(iter_obj)
 
-        return self.iter_callback_wrapper.on_process(output_module, results, sub_callback_step='on_iter_end', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+
+        return self.iter_callback_wrapper.on_process(output_module, results, **kwargs)
 
     def _iter_result(self, iter_obj, **kwargs):
         return self._iter_module(iter_obj, **kwargs)
@@ -946,13 +966,25 @@ class IterSequential(Sequential):
         _, output_module = self.modules[-1]
         results = []
 
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_start', **kwargs)
+        kwargs.update(
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_start'
+        )
+
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             yield iter_objs
             return
 
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
+
         for iter_obj in iter_objs:
             iter_obj = self._iter_result(iter_obj, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
@@ -962,7 +994,13 @@ class IterSequential(Sequential):
 
             yield iter_obj
 
-        obj = self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, sub_callback_step='on_iter_end', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+
+        obj = self.iter_callback_wrapper.on_process(output_module, results, **kwargs)
         obj = self.iter_callback_wrapper.on_process_end(lambda obj, **kwargs: obj, obj, **kwargs)
         return obj
 
@@ -970,18 +1008,30 @@ class IterSequential(Sequential):
 @base_module_tables.add_register()
 class AsyncIterSequential(IterSequential):
     """must provide a input module, don't need output module"""
+
     def __init__(self, *modules, **kwargs):
         super().__init__(*modules, force_add_input=False, force_add_output=False, **kwargs)
 
     async def _iter(self, obj, **kwargs):
         _, input_module = self.modules[0]
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_start', **kwargs)
+        kwargs.update(
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_start'
+        )
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             yield iter_objs
             return
 
         if self.pbar_visualize:
             iter_objs = asyncio.tqdm(iter_objs, desc=self.name)
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
+
         async for iter_obj in iter_objs:
             iter_obj = self._iter_result(iter_obj, **kwargs)
             if self.skip_exception_return and isinstance(iter_obj, Exception):
@@ -989,7 +1039,13 @@ class AsyncIterSequential(IterSequential):
 
             yield iter_obj
 
-        self.iter_callback_wrapper.on_process_end(lambda obj, sub_callback_step='on_iter_end', **kwargs: obj, obj, **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+
+        self.iter_callback_wrapper.on_process_end(lambda obj, **kwargs: obj, obj, **kwargs)
 
 
 @base_module_tables.add_register()
@@ -1000,9 +1056,21 @@ class LoopSequential(Sequential):
         _, input_module = self.modules[0]
         _, output_module = self.modules[-1]
 
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_strat', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_strat'
+        )
+
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             return iter_objs
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
 
         for iter_obj in iter_objs:
             # iter_obj will be merged in obj
@@ -1011,7 +1079,13 @@ class LoopSequential(Sequential):
             if self.skip_exception_return and isinstance(obj, Exception):
                 continue
 
-        return self.iter_callback_wrapper.on_process(output_module, obj, sub_callback_step='on_iter_end', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+
+        return self.iter_callback_wrapper.on_process(output_module, obj, **kwargs)
 
 
 @base_module_tables.add_register()
@@ -1028,12 +1102,21 @@ class BatchSequential(Sequential):
         _, output_module = self.modules[-1]
         results = []
         i = 0
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_strat', **kwargs)
+        kwargs.update(
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_strat'
+        )
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             return iter_objs
         if self.pbar_visualize:
             iter_objs = tqdm(iter_objs, desc=self.name)
-        kwargs.update(raw_obj=obj)
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
         batch_iter_obj = []
         for iter_obj in iter_objs:
             i += 1
@@ -1055,7 +1138,12 @@ class BatchSequential(Sequential):
             if not (self.skip_exception_return and isinstance(_iter_objs, Exception)) and self.cache_all_results:
                 results += _iter_objs
 
-        return self.iter_callback_wrapper.on_process(output_module, results, sub_callback_step='on_iter_end', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+        return self.iter_callback_wrapper.on_process(output_module, results, **kwargs)
 
 
 @base_module_tables.add_register()
@@ -1110,12 +1198,22 @@ class MultiProcessDataSequential(Sequential):
         processes = []
         results = []
         pbar = None
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_strat', **kwargs)
+        kwargs.update(
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_strat'
+        )
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             return iter_objs
         if self.pbar_visualize:
             # set a very small delay to avoid printing the pbar when initialization
             pbar = tqdm(desc=self.name, delay=1e-9)
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
         for iter_obj in iter_objs:
             processes.append(pool.apply_async(self._iter_module, args=(iter_obj,), kwds=kwargs))
             results.append(None)
@@ -1127,7 +1225,13 @@ class MultiProcessDataSequential(Sequential):
 
         self.checkout_iter_results(processes, results, on_process=False, pbar=pbar, **kwargs)
 
-        return self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, sub_callback_step='on_iter_end', **kwargs)
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+
+        return self.iter_callback_wrapper.on_process(output_module, results, **kwargs)
 
     def checkout_iter_results(self, processes, results, on_process=True, pbar=None, **kwargs):
         for i, p in enumerate(processes):
@@ -1203,9 +1307,20 @@ class MultiThreadDataSequential(Sequential):
             # set a very small delay to avoid printing the pbar when initialization
             pbar = tqdm(desc=self.name, delay=1e-9)
 
-        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, return_exceptions_flag=True, sub_callback_step='on_iter_strat', **kwargs)
+        kwargs.update(
+            return_exceptions_flag=True,
+            sub_callback_step='on_iter_strat'
+        )
+
+        iter_objs, flag = self.iter_callback_wrapper.on_process(input_module, obj, **kwargs)
         if flag:
             return iter_objs
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter'
+        )
 
         for iter_obj in input_module(obj, **kwargs):
             threads.append(self.pool.submit(self._iter_module, iter_obj, **kwargs))
@@ -1216,7 +1331,14 @@ class MultiThreadDataSequential(Sequential):
 
         self.checkout_iter_results(threads, results, on_process=False, pbar=pbar, **kwargs)
         results = [r for r in results if r is not None]
-        return self.iter_callback_wrapper.on_process(output_module, results, raw_obj=obj, sub_callback_step='on_iter_end', **kwargs)
+
+        kwargs.update(
+            raw_obj=obj,
+            return_exceptions_flag=False,
+            sub_callback_step='on_iter_end'
+        )
+
+        return self.iter_callback_wrapper.on_process(output_module, results, **kwargs)
 
     def checkout_iter_results(self, threads, results, on_process=True, pbar=None, **kwargs):
         for i, t in enumerate(threads):
@@ -1253,12 +1375,54 @@ class BaseSequentialInput(Module):
 
 
 @base_module_tables.add_register()
+class BatchSequentialInput(BaseSequentialInput):
+    batch_size = 1
+
+    def on_process_end(self, iter_objs: Optional[list], **kwargs):
+        batch_iter_obj = []
+        i = 0
+        for iter_obj in iter_objs:
+            i += 1
+
+            batch_iter_obj.append(iter_obj)
+            if i < self.batch_size:
+                continue
+
+            yield batch_iter_obj
+
+            i = 0
+            batch_iter_obj = []
+
+        if batch_iter_obj:
+            yield batch_iter_obj
+
+
+def async_sequential_input_wrapper(func):
+    @wraps(func)
+    async def async_gen_wrapper(*args, **kwargs):
+        # 获取普通生成器
+        for obj in func(*args, **kwargs):
+            yield obj
+
+    return async_gen_wrapper
+
+
+@base_module_tables.add_register()
 class BaseSequentialOutput(Module):
     """default input module for Sequential
     do nothing, just return an iterable obj"""
 
     def on_process(self, objs: list, raw_obj=None, **kwargs):
         return objs
+
+
+@base_module_tables.add_register()
+class KeepSequentialOutput(BaseSequentialOutput):
+    """default input module for Sequential
+    do nothing, just return an iterable obj"""
+
+    def on_process(self, objs: list, raw_obj=None, **kwargs):
+        return raw_obj
 
 
 @base_module_tables.add_register()

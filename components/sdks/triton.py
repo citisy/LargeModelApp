@@ -4,7 +4,7 @@ from utils import triton_utils
 from workflows import skeletons
 
 
-class TritonModule(skeletons.Module):
+class TritonModule(skeletons.RetryModule):
     trt_url: str
     trt_model_name: str
 
@@ -16,13 +16,15 @@ class TritonModule(skeletons.Module):
     config_dir: str
     config_file: str
 
+    headers = {}
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.config_path = f'{self.config_dir}/{self.config_file}' if hasattr(self, 'config_file') else ''
 
     @property
     def trt_client(self):
-        _trt_client = triton_utils.HttpClient(url=self.trt_url, config_path=self.config_path)
+        _trt_client = triton_utils.HttpClient(url=self.trt_url, config_path=self.config_path, headers=self.headers)
         if hasattr(self, 'model_versions'):
             _trt_client.model_versions = self.model_versions
         if hasattr(self, 'model_configs'):
@@ -55,10 +57,15 @@ class TritonModule(skeletons.Module):
         try:
             obj = self.request(obj, trt_client, **kwargs)
         except InferenceServerException as e:
-            self.logger.error(e)
-            self.logger.warning('It seem that the model is not init, reinit it!')
-            trt_client = triton_utils.HttpClient(url=self.trt_url)
-            obj = self.request(obj, trt_client, **kwargs)
+            if hasattr(self, 'model_versions'):
+                self.logger.error(e)
+                self.logger.warning('It seem that the model is not init or restart when running, try to reinit it again!')
+                del self.model_versions
+                del self.model_configs
+                trt_client = self.trt_client
+                obj = self.request(obj, trt_client, **kwargs)
+            else:
+                raise e
 
         self.model_configs = trt_client.model_configs
         self.model_versions = trt_client.model_versions
@@ -73,8 +80,7 @@ class TritonModule(skeletons.Module):
             ...
             async_req = trt_client.async_infer(
                 ...,
-                model_name=self.trt_model_name,
-                config_path=self.config_path
+                model_name=self.trt_model_name
             )
             async_reqs.append(async_req)
 

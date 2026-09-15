@@ -70,11 +70,6 @@ class BaseModelWithMysqlDb(BaseLogPipeline, BaseTaskPipeline, db.MysqlDbModule):
                 _id = self.cacher.cache_one(dict(task_id=task_id))
                 ret['id'] = _id
 
-            if 'id' in ret and 'id' in obj['kwargs'] and ret['id'] != obj['kwargs']['id']:
-                # request mysql again, for reprocessing history request
-                ret_ = self.cacher.get_one(id=ret['id'], convert_to_json=True)
-                ret.update(ret_)
-
         else:
             ret = {}
 

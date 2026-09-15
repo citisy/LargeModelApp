@@ -1,10 +1,11 @@
 import os
 import time
+from pathlib import Path
 
 import fastapi  # noqa
 import pydantic
 
-from utils import web_app, log_utils, converter
+from utils import web_app, log_utils, converter, configs
 from workflows import skeletons
 
 
@@ -74,10 +75,12 @@ def add_docs(
     from fastapi.openapi.utils import get_openapi
     from fastapi.responses import FileResponse
 
-    @app.get(f"/docs", include_in_schema=False)
+    openapi_fn = 'openapi.json'
+
+    @app.get(api_path, include_in_schema=False)
     async def custom_swagger_ui_html():
         return get_swagger_ui_html(
-            openapi_url=f'{router_path}/openapi.json',
+            openapi_url=f'{router_path}/{openapi_fn}',
             title=title + " - Swagger UI",
             swagger_js_url=f"{router_path}/static/swagger-ui-bundle.js",
             swagger_css_url=f"{router_path}/static/swagger-ui.css",
@@ -86,14 +89,14 @@ def add_docs(
 
     @app.get("/static/{file_path:path}", include_in_schema=False)
     async def get_static_file(file_path: str):
-        file_location = os.path.join('static', file_path)
+        file_location = os.path.join(Path(__file__).parent.resolve(), 'static', file_path)
 
         if not os.path.exists(file_location) or not os.path.isfile(file_location):
             raise HTTPException(status_code=404, detail="File not found")
 
         return FileResponse(file_location)
 
-    @app.get("/openapi.json", include_in_schema=False)
+    @app.get(f"/{openapi_fn}", include_in_schema=False)
     async def custom_openapi():
         openapi_schema = get_openapi(
             title=title,
@@ -133,8 +136,14 @@ class AsyncServer(BaseServer):
 
     def on_process(self, data, **kwargs):
         self.logger.info(f'Get request[{data["task_id"]}]')
-        self.pool.submit(self.model, data, **kwargs)
-        return {'task_id': data['task_id']}
+        f = self.pool.submit(self.model, data, **kwargs)
+        return {
+            'task_id': data['task_id'],
+            'data': {
+                'state': f._state,
+                'wait_queue': self.pool._work_queue.qsize()
+            }
+        }
 
 
 class SyncServer(BaseServer):
@@ -160,7 +169,8 @@ def simple_get_router(
 ):
     @app.get(api_path, **method_configs)
     def get():
-        ret = func(None, **func_configs)
+        _func_configs = configs.ConfigObjParse.merge_dict(dict(obj={}), func_configs)
+        ret = func(**_func_configs)
         return ret
 
 
@@ -245,6 +255,10 @@ def create_app(configs):
             add_async = _config.get('add_async', False)
             if add_async:
                 p = f'{k2}/async'
+                if 'async_response_template' in _config:
+                    _config.update(
+                        response_template=converter.DataInsConvert.str_to_instance(_config['async_response_template']),
+                    )
                 tmp[p] = dict(
                     func=AsyncServer(model, n_pool=_config.get('num_async_worker', 5), logger=logger),
                     **_config

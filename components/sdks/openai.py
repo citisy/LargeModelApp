@@ -1,4 +1,7 @@
 import asyncio
+import os
+
+import openai
 
 from workflows import exceptions, skeletons, callbacks
 from .. import _callbacks, base
@@ -125,23 +128,31 @@ class OpenaiMysqlCallbackModule(Openai, base.MysqlCallbackModule):
         return obj
 
 
-class Volcengine(skeletons.Module):
+class Volcengine(skeletons.RetryModule):
     model: str
 
     client_kwargs = dict(
-        api_key="",
+        api_key=os.getenv('VOL_API_KEY', ""),
         base_url="https://ark.cn-beijing.volces.com/api/v3",
     )
+    llm_client_kwargs = {}
+    disable_thinking = True
+
+    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.llm_client = Openai(
             model=self.model,
-            client_kwargs=self.client_kwargs
+            client_kwargs=self.client_kwargs,
+            **self.llm_client_kwargs
         )
 
-    def request(self, sys, user, return_content=True, global_kwargs={}, **post_kwargs):
-        messages = [
+    def request(
+            self, sys=None, user=None, messages=None,
+            return_content=True, global_kwargs={}, **post_kwargs
+    ):
+        messages = messages or [
             {
                 "role": "system",
                 "content": sys,
@@ -151,6 +162,18 @@ class Volcengine(skeletons.Module):
                 "content": user,
             },
         ]
+
+        if self.disable_thinking:
+            post_kwargs.setdefault(
+                'extra_body',
+                dict(
+                    thinking={
+                        "type": "disabled"
+                    },
+                    chat_template_kwargs={"enable_thinking": False},
+                    enable_thinking=False
+                )
+            )
 
         ret = self.llm_client(dict(
             post_kwargs=dict(
@@ -215,22 +238,22 @@ class VolcengineMysqlModule(Volcengine):
         )
 
 
-class QwenVl(skeletons.Module):
-    model: str
+class QwenVl(skeletons.RetryModule):
+    model = "qwen-vl-max-latest"
 
-    client_kwargs = dict(
-        api_key='',
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
-    )
+    client_kwargs = dict()
+    llm_client_kwargs = {}
+    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.llm_client = Openai(
             model=self.model,
-            client_kwargs=self.client_kwargs
+            client_kwargs=self.client_kwargs,
+            **self.llm_client_kwargs
         )
 
-    def request(self, img_url, text="这张图片描述了些什么？", **post_kwargs):
+    def request(self, img_url, **post_kwargs):
         messages = [
             {
                 "role": "user",
@@ -241,7 +264,7 @@ class QwenVl(skeletons.Module):
                             "url": img_url
                         },
                     },
-                    {"type": "text", "text": text},
+                    {"type": "text", "text": "这张图片描述了些什么？"},
                 ],
             }
         ]

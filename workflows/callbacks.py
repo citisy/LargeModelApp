@@ -57,7 +57,7 @@ class FakeCallbackWrapper:
     def on_process_start(self, func, obj, **kwargs):
         return func(obj, **kwargs)
 
-    def on_process(self, func, obj, return_exceptions_flag=True, **kwargs):
+    def on_process(self, func, obj, return_exceptions_flag=False, **kwargs):
         obj = func(obj, **kwargs)
         if return_exceptions_flag:
             return obj, False

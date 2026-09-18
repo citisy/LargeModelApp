@@ -108,7 +108,7 @@ class UrlErrCallback(callbacks.Module):
         else:
             ret = self.err_response(
                 task_id=task_id,
-                code=500,
+                code=status.get('error_status', 500),
                 message=f'{type(e).__name__}: {e}',
                 **global_caches
             ).dict()

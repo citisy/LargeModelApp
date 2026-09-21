@@ -89,9 +89,9 @@ class MysqlDbSuccessCallback(callbacks.Module):
 
         data = dict()
 
-        status_key = status.get('status_key')
-        if status_key:
-            data[status_key] = status['success_status']
+        status_code_key = status.get('status_code_key')
+        if status_code_key:
+            data[status_code_key] = status['success_code']
 
         error_key = status.get('error_key')
         if error_key:
@@ -147,12 +147,12 @@ class MySqlDbErrCallback(callbacks.Module):
 
             data[error_key] = error_msg
 
-        status_key = status.get('status_key')
-        if status_key is not None:
+        status_code_key = status.get('status_code_key')
+        if status_code_key is not None:
             if isinstance(parse_obj, exceptions._BaseException):
-                data[status_key] = parse_obj.code
-            elif 'error_status' in status:
-                data[status_key] = status['error_status']
+                data[status_code_key] = parse_obj.code
+            elif 'error_code' in status:
+                data[status_code_key] = status['error_code']
 
         global_caches = status['global_caches']
         data.update(global_caches)

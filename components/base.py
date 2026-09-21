@@ -126,8 +126,8 @@ class AsyncBaseModel(AsyncBaseLogSequential, AsyncBaseTaskSequential):
 class BaseCallbackModule(skeletons.Module):
     global_cacher_keys: list = []
 
-    success_status: int = 100
-    error_status: int = 500
+    success_code: int = 100
+    error_code: int = 500
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -155,7 +155,7 @@ class MysqlCallbackModule(BaseCallbackModule):
     allow_duplicates = False
     mysql_cacher_keys: list = []
     mysql_error_key: str = 'error_msg'
-    mysql_status_key: str = None
+    mysql_status_code_key: str = None
     mysql_filter_mapping = {'id': 'id'}  # (mysql_key, obj_key)
 
     def __init__(self, **kwargs):
@@ -174,9 +174,9 @@ class MysqlCallbackModule(BaseCallbackModule):
             filter_mapping=self.mysql_filter_mapping,
             cacher_keys=self.mysql_cacher_keys,
             error_key=self.mysql_error_key,
-            status_key=self.mysql_status_key,
-            success_status=self.success_status,
-            error_status=self.error_status
+            status_code_key=self.mysql_status_code_key,
+            success_code=self.success_code,
+            error_code=self.error_code
         )
         if 'MysqlDbSuccessCallback' in kwargs['callback_status']:
             kwargs['callback_status']['MysqlDbSuccessCallback'] = dict(

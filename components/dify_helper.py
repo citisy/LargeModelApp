@@ -7,6 +7,9 @@ import json
 import os
 import re
 from typing import Any, Optional, Sequence
+from utils import op_utils
+
+dify_register_modules = op_utils.RegisterTables()
 
 SELECTOR_RE = re.compile(r'\{\{#([^#]+)#\}\}')
 JINJA_VAR_RE = re.compile(r'\{\{\s*([a-zA-Z_][\w]*)\s*\}\}')

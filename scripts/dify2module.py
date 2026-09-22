@@ -351,23 +351,25 @@ class CodeGenerator:
 
     # ----- class generation -----
 
-    def generate(self) -> List[str]:
+    def generate(self, gen_test_code=False) -> List[str]:
         codes = []
         for graph in self.graphs:
             self._use(graph)
             top = self.g.top_level_ids()
             tree = self.compile(top)
             classes = self._gen_all_node_classes(tree)
-            codes.append(self.join_blocks(
-                self._header(),
+            parts = [
+                self._header(gen_test_code=gen_test_code),
                 classes,
                 self._gen_model_class(tree),
-                self._gen_main(),
-            ))
+            ]
+            if gen_test_code:
+                parts.append(self._gen_main())
+            codes.append(self.join_blocks(*parts))
         return codes
 
-    def to_files(self, out_dir: str = None, out_files: List[str] = None) -> List[Path]:
-        codes = self.generate()
+    def to_files(self, out_dir: str = None, out_files: List[str] = None, gen_test_code=False) -> List[Path]:
+        codes = self.generate(gen_test_code=gen_test_code)
         if out_files is not None and len(out_files) != len(codes):
             raise ValueError(f'out_files length {len(out_files)} != generated modules {len(codes)}')
 
@@ -376,9 +378,11 @@ class CodeGenerator:
             if out_dir:
                 root = Path(out_dir)
                 paths = [p if p.is_absolute() else root / p for p in paths]
-        else:
-            root = Path(out_dir or 'dify_modules')
+        elif out_dir is not None:
+            root = Path(out_dir)
             paths = [root / f'{self.safe_filename(name)}.py' for name in self.app_names]
+        else:
+            raise
 
         written = []
         for path, code in zip(paths, codes):
@@ -412,7 +416,7 @@ class CodeGenerator:
     def _used_types(self) -> set:
         return {self.g.type_of(nid) for nid in self.g.nodes}
 
-    def _header(self) -> str:
+    def _header(self, gen_test_code=False) -> str:
         types = self._used_types()
         helpers = ['sel', 'set_node']
         if types & {'llm', 'http-request', 'tool'}:
@@ -423,8 +427,10 @@ class CodeGenerator:
             helpers.append('parse_http_headers')
         if 'if-else' in types:
             helpers.extend(['match_case', 'pick_switch_handle'])
+        helpers.append('dify_register_modules')
         helper_lines = ',\n    '.join(helpers)
         volc = 'from components.sdks.openai import Volcengine\n' if 'llm' in types else ''
+        json_imp = 'import json\n' if gen_test_code or types & {'http-request', 'tool'} else ''
         os_imp = 'import os\n' if 'llm' in types else ''
         warns = ''
         if self.warnings:
@@ -435,8 +441,7 @@ class CodeGenerator:
 Auto-converted from a Dify workflow by dify2module.py.
 Override the actual LLM model id with env vars, e.g. DIFY_MODEL_doubao_1_6.
 """
-import json
-{os_imp}
+{json_imp}{os_imp}
 
 from components.base import BaseModelWithoutDb
 from components.dify_helper import (
@@ -516,12 +521,17 @@ from components.dify_helper import (
             parts.append(fn(nid, extra))
         return self.join_blocks(*parts)
 
+    def _register_deco(self) -> str:
+        table = json.dumps(self.g.app_name, ensure_ascii=False)
+        return f'@dify_register_modules.add_register(table_name={table})'
+
     def _cls_head(self, nid: str, base: str, extra_attrs: str = '') -> str:
         title = self.g.title_of(nid)
         desc = (self.g.data_of(nid).get('desc') or '').strip()
         doc = title if not desc else f'{title}\n    {desc}'
         attrs = extra_attrs if extra_attrs.endswith('\n') or extra_attrs == '' else extra_attrs + '\n'
         return (
+            f'{self._register_deco()}\n'
             f'class {self.class_names[nid]}({base}):\n'
             f'    """{doc}"""\n'
             f'    node_id = {str(nid)!r}\n'
@@ -784,18 +794,16 @@ from components.dify_helper import (
                 lines.append(f'        params[{key!r}] = {value!r}')
             else:
                 lines.append(f'        params[{key!r}] = render_prompt({self.to_py_string(value)}, obj)')
-        if module_file:
+        if provider_type == 'workflow' or module_file:
+            if not module_file:
+                self.warnings.append(
+                    f'Tool node {self.g.title_of(nid)} ({provider}/{tool_name}) '
+                    f'is a workflow tool; import that module so it registers as {provider!r}'
+                )
             lines += [
-                f'        inner_mod = {module_file!r}',
-                '        try:',
-                '            import importlib',
-                '            Inner = importlib.import_module(inner_mod).Model',
-                '        except Exception:',
-                '            Inner = None',
-                '        if Inner is None:',
-                "            raise RuntimeError(f'Tool module {inner_mod} not found; convert that Dify workflow first')",
+                "        inner_module = dify_register_modules.get('Model', self.provider_name)()",
                 "        task_id = kwargs.get('task_id') or 'tool'",
-                "        ret = Inner()({'task_id': task_id, 'kwargs': params}, task_id=task_id)",
+                "        ret = inner_module({'task_id': task_id, 'kwargs': params}, task_id=task_id)",
                 "        data = ret.get('data') if isinstance(ret, dict) else ret",
                 '        data = data or {}',
                 "        text = data.get('body') or data.get('result') or data.get('text')",
@@ -896,7 +904,9 @@ from components.dify_helper import (
         out_keys_arg = f', {out_keys}' if out_keys else ''
         in_name = self.class_names[nid] + 'Input'
         out_name = self.class_names[nid] + 'Output'
-        input_cls = f'''class {in_name}(skeletons.BaseSequentialInput):
+        deco = self._register_deco()
+        input_cls = f'''{deco}
+class {in_name}(skeletons.BaseSequentialInput):
     """{self.g.title_of(nid)} iteration input"""
 
     def on_process(self, obj, **kwargs):
@@ -911,7 +921,8 @@ from components.dify_helper import (
             set_node(item_obj, {str(start_id)!r}, item=item, index=i)
             yield item_obj
 '''
-        output_cls = f'''class {out_name}(skeletons.BaseSequentialOutput):
+        output_cls = f'''{deco}
+class {out_name}(skeletons.BaseSequentialOutput):
     """{self.g.title_of(nid)} iteration output"""
 
     def on_process(self, objs, raw_obj=None, **kwargs):
@@ -919,7 +930,8 @@ from components.dify_helper import (
         set_node(raw_obj if raw_obj is not None else {{}}, {str(nid)!r}, output=outputs)
         return raw_obj
 '''
-        iter_cls = f'''class {self.class_names[nid]}(skeletons.Sequential):
+        iter_cls = f'''{deco}
+class {self.class_names[nid]}(skeletons.Sequential):
     """{self.g.title_of(nid)}"""
     node_id = {str(nid)!r}
 
@@ -1018,7 +1030,8 @@ from components.dify_helper import (
             inner = '\n'.join(self.emit_ctor(ch, indent=12) for ch in tree.get('children') or [])
         else:
             inner = ctor
-        return f'''class Model(BaseModelWithoutDb):
+        return f'''{self._register_deco()}
+class Model(BaseModelWithoutDb):
     """{self.g.app_name}"""
 
     def __init__(self, cfgs={{}}, name=None, **kwargs):
@@ -1064,7 +1077,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description='Convert a Dify workflow YAML into workflows modules')
     parser.add_argument('src', help='YAML file or directory')
     parser.add_argument('-o', '--out', default='dify_modules', help='output directory or file')
-    parser.add_argument('--stdout', action='store_true', help='print to stdout (single file only)')
+    parser.add_argument('--gen-test-code', action='store_true', help='append the if __name__ demo block')
     args = parser.parse_args(argv)
 
     def iter_yaml(path: Path) -> List[Path]:
@@ -1080,19 +1093,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     gen = CodeGenerator(files)
-    if args.stdout:
-        codes = gen.generate()
-        if len(codes) != 1:
-            print('--stdout only supports a single YAML file', file=sys.stderr)
-            return 1
-        sys.stdout.write(codes[0])
-        return 0
 
     out = Path(args.out)
     if len(files) == 1 and out.suffix == '.py':
-        outputs = gen.to_files(out_files=[str(out)])
+        outputs = gen.to_files(out_files=[str(out)], gen_test_code=args.gen_test_code)
     else:
-        outputs = gen.to_files(out_dir=str(out))
+        outputs = gen.to_files(out_dir=str(out), gen_test_code=args.gen_test_code)
 
     for p in outputs:
         print(f'wrote {p}')

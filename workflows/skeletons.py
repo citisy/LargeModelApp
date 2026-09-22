@@ -208,6 +208,20 @@ class Module:
         assert isinstance(dic, dict), f'after parse the file, would like to get a `dict` not the `{type(dic)}`'
         return cls.from_structure_dict(dic, register_tables)
 
+    @staticmethod
+    def from_dify_config_file(file_path):
+        from scripts import dify2module
+        from components import dify_helper
+
+        gen = dify2module.CodeGenerator([file_path])
+        codes = gen.generate()
+        # Class bodies look up names in this globals dict. exec() inside a
+        # method would otherwise bind imports like `os` only in the method locals.
+        namespace = {'__name__': 'dify_workflow'}
+        exec(codes[0], namespace)
+        module = dify_helper.dify_register_modules.get('Model', gen.graphs[0].app_name)()
+        return module
+
     def add_callback(self):
         if isinstance(self.callback_wrapper, callbacks.FakeCallbackWrapper):
             self.callback_wrapper = self.callback_wrapper_ins(module_name=self.name, **self.callback_wrapper_kwargs)

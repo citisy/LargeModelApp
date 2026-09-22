@@ -842,6 +842,8 @@ print(inp([
 
 ## 6. 用配置 / 结构装配
 
+参数、注册表、导出后再加载，以及 Dify 文件入口，见 [用 Module.from_xxx() 初始化](./module_init.md)。
+
 ### from_structure_dict
 
 ```python
@@ -886,7 +888,7 @@ print(m({}))
 print(m.to_structure_dict())
 ```
 
-未在 `reg` 里的名字会回落到框架内置表（`Pipeline`、`Sequential` 等）。
+上面的 `reg` 是 `RegisterTables`，结构里出现的每个名字都要先登记。传入 `dict` 时，表里没有的名字才会去内置表（`Pipeline`、`Sequential` 等）查找。
 
 ### from_structure_array
 

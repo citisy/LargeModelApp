@@ -214,12 +214,12 @@ class Module:
         from components import dify_helper
 
         gen = dify2module.CodeGenerator([file_path])
-        codes = gen.generate()
+        codes = gen.to_strings()
         # Class bodies look up names in this globals dict. exec() inside a
         # method would otherwise bind imports like `os` only in the method locals.
         namespace = {'__name__': 'dify_workflow'}
         exec(codes[0], namespace)
-        module = dify_helper.dify_register_modules.get('Model', gen.graphs[0].app_name)()
+        module: Module = dify_helper.dify_register_modules.get('Model', gen.graphs[0].app_name)()
         return module
 
     def add_callback(self):

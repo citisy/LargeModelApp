@@ -351,25 +351,35 @@ class CodeGenerator:
 
     # ----- class generation -----
 
-    def generate(self, gen_test_code=False) -> List[str]:
+    def to_strings(
+            self,
+            add_test_code=False, add_template=True
+    ) -> List[str]:
         codes = []
         for graph in self.graphs:
             self._use(graph)
             top = self.g.top_level_ids()
             tree = self.compile(top)
             classes = self._gen_all_node_classes(tree)
-            parts = [
-                self._header(gen_test_code=gen_test_code),
+            parts = [self._header(add_test_code=add_test_code, add_template=add_template)]
+            if add_template:
+                parts.append(self._gen_io_template())
+            parts.extend([
                 classes,
                 self._gen_model_class(tree),
-            ]
-            if gen_test_code:
+            ])
+            if add_test_code:
                 parts.append(self._gen_main())
             codes.append(self.join_blocks(*parts))
         return codes
 
-    def to_files(self, out_dir: str = None, out_files: List[str] = None, gen_test_code=False) -> List[Path]:
-        codes = self.generate(gen_test_code=gen_test_code)
+    def to_files(
+            self,
+            out_dir=None, out_files=None,
+            add_test_code=False, add_package_init=True,
+            add_template=True,
+    ) -> List[Path]:
+        codes = self.to_strings(add_test_code=add_test_code, add_template=add_template)
         if out_files is not None and len(out_files) != len(codes):
             raise ValueError(f'out_files length {len(out_files)} != generated modules {len(codes)}')
 
@@ -391,7 +401,7 @@ class CodeGenerator:
             path.write_text(code, encoding='utf-8')
             written.append(path)
 
-        if out_files is None or out_dir:
+        if add_package_init and (out_files is None or out_dir):
             root = Path(out_dir) if out_dir else written[0].parent
             self._write_package_init(root)
         return written
@@ -416,7 +426,7 @@ class CodeGenerator:
     def _used_types(self) -> set:
         return {self.g.type_of(nid) for nid in self.g.nodes}
 
-    def _header(self, gen_test_code=False) -> str:
+    def _header(self, add_test_code=False, add_template=False) -> str:
         types = self._used_types()
         helpers = ['sel', 'set_node']
         if types & {'llm', 'http-request', 'tool'}:
@@ -430,8 +440,12 @@ class CodeGenerator:
         helpers.append('dify_register_modules')
         helper_lines = ',\n    '.join(helpers)
         volc = 'from components.sdks.openai import Volcengine\n' if 'llm' in types else ''
-        json_imp = 'import json\n' if gen_test_code or types & {'http-request', 'tool'} else ''
+        json_imp = 'import json\n' if add_test_code or types & {'http-request', 'tool'} else ''
         os_imp = 'import os\n' if 'llm' in types else ''
+        if add_template:
+            io_imp = 'from components import template\nfrom workflows import skeletons\nfrom pydantic import BaseModel\n'
+        else:
+            io_imp = 'from workflows import skeletons\n'
         warns = ''
         if self.warnings:
             warns = '\n'.join(f'# warning: {w}' for w in self.warnings) + '\n'
@@ -447,8 +461,7 @@ from components.base import BaseModelWithoutDb
 from components.dify_helper import (
     {helper_lines},
 )
-{volc}from workflows import skeletons
-
+{volc}{io_imp}
 {warns}'''
 
     def _walk_steps(self, step: dict) -> Iterable[dict]:
@@ -803,7 +816,7 @@ from components.dify_helper import (
             lines += [
                 "        inner_module = dify_register_modules.get('Model', self.provider_name)()",
                 "        task_id = kwargs.get('task_id') or 'tool'",
-                "        ret = inner_module({'task_id': task_id, 'kwargs': params}, task_id=task_id)",
+                "        ret = inner_module({'task_id': task_id, 'kwargs': params}",
                 "        data = ret.get('data') if isinstance(ret, dict) else ret",
                 '        data = data or {}',
                 "        text = data.get('body') or data.get('result') or data.get('text')",
@@ -1042,6 +1055,71 @@ class Model(BaseModelWithoutDb):
         )
 '''
 
+    _py_types = {
+        'text-input': 'str',
+        'paragraph': 'str',
+        'select': 'str',
+        'string': 'str',
+        'text': 'str',
+        'number': 'float',
+        'integer': 'int',
+        'boolean': 'bool',
+        'checkbox': 'bool',
+        'object': 'dict',
+        'file': 'dict',
+        'array[string]': 'list[str]',
+        'array[number]': 'list[float]',
+        'array[object]': 'list[dict]',
+        'array[boolean]': 'list[bool]',
+        'array[file]': 'list[dict]',
+        'file-list': 'list[dict]',
+    }
+
+    @classmethod
+    def _py_type(cls, typ: str) -> str:
+        return cls._py_types.get((typ or '').strip(), 'str')
+
+    @staticmethod
+    def _field_name(name: str) -> str:
+        safe = re.sub(r'\W+', '_', str(name)).strip('_')
+        if not safe or safe[0].isdigit():
+            safe = f'f_{safe}'
+        return safe
+
+    def _gen_io_template(self) -> str:
+        """Request/response models from the start variables and end outputs."""
+        req_fields = []
+        start = self.g.start_id()
+        if start:
+            for var in self.g.data_of(start).get('variables') or []:
+                key = var.get('variable') or var.get('name')
+                if not key:
+                    continue
+                req_fields.append(f'    {self._field_name(key)}: {self._py_type(var.get("type"))}')
+
+        res_fields = []
+        seen = set()
+        for nid in self.g.end_ids():
+            for item in self.g.data_of(nid).get('outputs') or []:
+                selector = item.get('value_selector') or item.get('valueSelector') or []
+                key = item.get('variable') or item.get('name') or (selector[-1] if selector else '')
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                typ = item.get('value_type') or item.get('type') or 'string'
+                res_fields.append(f'    {self._field_name(key)}: {self._py_type(typ)}')
+
+        req_body = '\n'.join(req_fields) if req_fields else '    pass'
+        res_body = '\n'.join(res_fields) if res_fields else '    pass'
+        deco = self._register_deco()
+        blocks = [
+            f'{deco}\nclass RepData(BaseModel):\n{req_body}',
+            f'{deco}\nclass Request(template.BaseRequest):\n    kwargs: RepData',
+            f'{deco}\nclass ResData(BaseModel):\n{res_body}',
+            f'{deco}\nclass Response(template.BaseSuccessResponse):\n    data: ResData | dict = {{}}',
+        ]
+        return '\n\n\n'.join(blocks)
+
     def _gen_main(self) -> str:
         start = self.g.start_id()
         kwargs_lines = []
@@ -1067,7 +1145,6 @@ if __name__ == '__main__':
 {kwargs_block}
             }},
         }},
-        task_id='demo',
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 '''
@@ -1077,7 +1154,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description='Convert a Dify workflow YAML into workflows modules')
     parser.add_argument('src', help='YAML file or directory')
     parser.add_argument('-o', '--out', default='dify_modules', help='output directory or file')
-    parser.add_argument('--gen-test-code', action='store_true', help='append the if __name__ demo block')
+    parser.add_argument('--add-test-code', dest='add_test_code', action='store_true', help='append the if __name__ demo block')
+    parser.add_argument('--add-template', action='store_true', help='emit Request/Response pydantic templates')
     args = parser.parse_args(argv)
 
     def iter_yaml(path: Path) -> List[Path]:
@@ -1096,9 +1174,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     out = Path(args.out)
     if len(files) == 1 and out.suffix == '.py':
-        outputs = gen.to_files(out_files=[str(out)], gen_test_code=args.gen_test_code)
+        outputs = gen.to_files(out_files=[str(out)], add_test_code=args.add_test_code, add_template=args.add_template)
     else:
-        outputs = gen.to_files(out_dir=str(out), gen_test_code=args.gen_test_code)
+        outputs = gen.to_files(out_dir=str(out), add_test_code=args.add_test_code, add_template=args.add_template)
 
     for p in outputs:
         print(f'wrote {p}')

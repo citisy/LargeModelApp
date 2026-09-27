@@ -1,7 +1,5 @@
 import os
 
-import pymysql
-
 from utils import os_lib, op_utils
 from workflows import callbacks, exceptions, skeletons
 
@@ -16,6 +14,8 @@ class MysqlDbModule(skeletons.Module):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        import pymysql
+
         self.cacher = os_lib.MySqlCacher(
             host=self.mysql_host,
             port=self.mysql_port,

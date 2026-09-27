@@ -1,0 +1,41 @@
+# basic
+numpy
+pandas
+tqdm
+pydantic
+PyYAML
+requests
+opencv-python-headless
+Pillow
+packaging
+
+# server required
+fastapi
+uvicorn
+jinja2
+
+# api request
+openai
+tritonclient[all]
+
+## lazy import
+# pymysql
+# redis
+# psycopg2-binary
+# pymilvus
+# pydub
+# decord
+# PyTurboJPEG
+# pdf2image
+# PyMuPDF
+# graphviz
+# pylzma
+# cn2an
+# jieba
+# h5py
+# matplotlib
+# wandb
+# flask
+# gradio
+# volcengine-python-sdk[ark]
+# dashscope

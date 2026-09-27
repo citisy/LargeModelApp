@@ -223,18 +223,21 @@ def create_app(configs):
 
             model_instance = _config.get('model_instance', None)
             if model_instance:
-                model = converter.DataInsConvert.str_to_instance(_config['model_instance']).from_configs(cfgs, logger=logger, **additional_configs)
+                if isinstance(model_instance, str):
+                    model = converter.DataInsConvert.str_to_instance(model_instance).from_configs(cfgs, logger=logger, **additional_configs)
+                else:
+                    model = model_instance
                 model_mapping[k1 + k2] = model
                 logger.info(f'Model init:\n{model}')
             else:
                 model = None
 
             request_template = _config.get('request_template', None)
-            if request_template:
-                request_template = converter.DataInsConvert.str_to_instance(_config['request_template'])
+            if request_template and isinstance(request_template, str):
+                request_template = converter.DataInsConvert.str_to_instance(request_template)
             response_template = _config.get('response_template', None)
-            if response_template:
-                response_template = converter.DataInsConvert.str_to_instance(_config['response_template'])
+            if response_template and isinstance(response_template, str):
+                response_template = converter.DataInsConvert.str_to_instance(response_template)
 
             _config.update(
                 model=model,

@@ -513,9 +513,9 @@ POST 后把模型的异步/同步生成器包成 `StreamingResponse`。
 OpenAI 兼容 Chat Completions。`obj['post_kwargs']` 需含 `messages`。
 
 ```python
-from components.sdks.openai import Openai
+from components.sdks.openai import ChatClient
 
-client = Openai(
+client = ChatClient(
     model='demo-model',
     client_kwargs=dict(api_key='***', base_url='http://127.0.0.1:8000/v1'),
 )
@@ -533,9 +533,9 @@ print(ret['content'])
 调用成功后把 messages、content、token 用量、耗时写入 `mysql_table`。过滤条件默认 `pid` / `sid`。
 
 ```python
-from components.sdks.openai import OpenaiMysqlCallbackModule
+from components.sdks.openai import ChatClientMysqlCallbackModule
 
-llm = OpenaiMysqlCallbackModule(
+llm = ChatClientMysqlCallbackModule(
     model='demo-model',
     mysql_table='llm_call',
     client_kwargs=dict(api_key='***', base_url='http://127.0.0.1:8000/v1'),
@@ -550,7 +550,7 @@ llm(
 
 ### openai.Volcengine
 
-对 `Openai` 的薄封装：`request(sys, user)` 拼 system/user 消息。默认 `disable_thinking=True`。连接类错误会重试。
+对 `ChatClient` 的薄封装：`request(sys, user)` 拼 system/user 消息。默认 `disable_thinking=True`。连接类错误会重试。
 
 ```python
 from components.sdks.openai import Volcengine
@@ -767,7 +767,7 @@ class Model(BaseModelWithoutDb):
 | 按 task_id 续跑、可查 | `BaseModelWithMysqlDb` + 子模块 `MysqlCallbackModule` |
 | 结束后通知调用方 | `UrlCallbackModule` |
 | YAML 自动出 `/sync` `/async` | `api.create_app` |
-| OpenAI 兼容对话 | `sdks.openai.Volcengine` 或 `Openai` |
-| 调用明细落库 | `VolcengineMysqlModule` / `OpenaiMysqlCallbackModule` |
+| OpenAI 兼容对话 | `sdks.openai.Volcengine` 或 `ChatClient` |
+| 调用明细落库 | `VolcengineMysqlModule` / `ChatClientMysqlCallbackModule` |
 | 图片 HTTP 推理 | `simple_client.BaseImageRequestClient` |
 | Triton | `TritonModule` |

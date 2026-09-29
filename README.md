@@ -62,7 +62,7 @@ model.flow_chat('xxx', format='png')
 
 #### 生成一条可运行的api接口
 
-接口部署
+部署
 
 ```python
 from workflows import skeletons
@@ -94,7 +94,7 @@ if __name__ == '__main__':
     )
 ```
 
-接口访问
+访问
 
 ```bash
 curl -X 'POST' \
@@ -107,7 +107,7 @@ curl -X 'POST' \
 }'
 ```
 
-接口返回
+返回
 
 ```json
 {
@@ -147,13 +147,13 @@ Api:
       response_template: models.xxx.Response
 ```
 
-接口部署
+部署
 
 ```python
 from utils import os_lib
 from components import api
 
-configs = os_lib.loader.load_yaml('test.yml')
+configs = os_lib.loader.load_yaml('configs/example.yml')
 
 app = api.create_app(configs)
 
@@ -167,7 +167,7 @@ if __name__ == '__main__':
     )
 ```
 
-接口访问
+访问
 
 ```bash
 curl -X 'POST' \
@@ -180,7 +180,7 @@ curl -X 'POST' \
 }'
 ```
 
-接口返回
+返回
 
 ```json
 {

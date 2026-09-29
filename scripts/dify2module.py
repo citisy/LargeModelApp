@@ -63,7 +63,7 @@ class DifyGraph:
 
     def type_of(self, nid: str) -> str:
         node = self.nodes.get(str(nid)) or {}
-        return ((node.get('data') or {}).get('type') or '')
+        return (node.get('data') or {}).get('type') or ''
 
     def data_of(self, nid: str) -> dict:
         node = self.nodes.get(str(nid)) or {}
@@ -82,7 +82,7 @@ class DifyGraph:
     def sort_key(self, nid: str):
         node = self.nodes.get(nid) or {}
         pos = node.get('position') or {}
-        return (float(pos.get('x') or 0), float(pos.get('y') or 0), nid)
+        return float(pos.get('x') or 0), float(pos.get('y') or 0), nid
 
     def start_id(self, ids: Optional[Iterable[str]] = None) -> Optional[str]:
         pool = list(ids) if ids is not None else self.top_level_ids()

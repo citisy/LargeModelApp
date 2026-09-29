@@ -5,53 +5,82 @@ import openai
 
 from workflows import exceptions, skeletons, callbacks
 from .. import _callbacks, base
+import time
 
 
-class Base(skeletons.Module):
-    def on_process_end(self, obj, **kwargs):
-        post_result = obj['post_result']
-        content = post_result.choices[0].message.content
-        obj.update(content=content)
-
-        return obj
-
-
-class Openai(Base):
+class ChatClient(skeletons.RetryModule):
     model: str
     client_kwargs: dict = {}
 
     max_input_length = None
+    disable_thinking = True
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
 
+    @property
+    def client(self):
         from openai import AsyncOpenAI  # pip install openai
-        self.client = AsyncOpenAI(**self.client_kwargs)
+        return AsyncOpenAI(**self.client_kwargs)
 
-    def on_process(self, obj, **kwargs):
-        # important post_kwargs: [messages]
-        post_kwargs = obj['post_kwargs']
+    def make_post_kwargs(self, sys=None, user=None, messages=None, post_kwargs=dict()):
+        messages = messages or [
+            {
+                "role": "system",
+                "content": sys,
+            },
+            {
+                "role": "user",
+                "content": user,
+            },
+        ]
+        if self.max_input_length and len(str(messages)) > self.max_input_length:
+            raise exceptions.LLMInputOutOfLengthException(len(str(messages)), self.max_input_length)
 
-        if self.max_input_length and 'messages' in post_kwargs and len(str(post_kwargs['messages'])) > self.max_input_length:
-            raise exceptions.LLMInputOutOfLengthException(len(str(post_kwargs['messages'])), self.max_input_length)
-
-        post_result = asyncio.run(self.client.chat.completions.create(
+        post_kwargs.update(
             model=self.model,
-            **post_kwargs
-        ))
+            messages=messages,
+        )
+
+        if self.disable_thinking:
+            post_kwargs.setdefault(
+                'extra_body',
+                dict(
+                    thinking={
+                        "type": "disabled"
+                    },
+                    chat_template_kwargs={"enable_thinking": False},
+                    enable_thinking=False
+                )
+            )
+
+        return post_kwargs
+
+    async def run(self, **post_kwargs):
+        # solve: RuntimeError: Event loop is closed
+        async with self.client as client:
+            post_result = await client.chat.completions.create(**post_kwargs)
 
         if post_result.choices[0].finish_reason == 'content_filter':
             raise exceptions.LLMBlockException()
 
-        obj.update(post_result=post_result)
-        return obj
+        return post_result
 
-    async def on_stream_process(self, obj, **kwargs):
-        # important post_kwargs: [messages]
-        post_kwargs = obj['post_kwargs']
+    def request(
+            self, sys=None, user=None, messages=None,
+            return_content=True, **post_kwargs
+    ):
+        post_kwargs = self.make_post_kwargs(sys=sys, user=user, messages=messages, post_kwargs=post_kwargs)
+        post_result = asyncio.run(self.run(**post_kwargs))
+
+        if return_content:
+            return post_result.choices[0].message.content
+        else:
+            return post_result
+
+    async def on_stream_request(self, sys=None, user=None, messages=None, **post_kwargs):
+        post_kwargs = self.make_post_kwargs(sys=sys, user=user, messages=messages, post_kwargs=post_kwargs)
 
         async for chunk in await self.client.chat.completions.create(
-                model=self.model,
                 stream=True,
                 **post_kwargs
         ):
@@ -60,31 +89,170 @@ class Openai(Base):
                 yield content
 
 
-class OpenaiMysqlCallbackModule(Openai, base.MysqlCallbackModule):
-    add_url_callback = False
+class ResponseClient(skeletons.RetryModule):
+    model: str
+    client_kwargs: dict = {}
 
-    mysql_cacher_keys: list = ['model', 'messages', 'content', 'reasoning_content', 'total_tokens', 'prompt_tokens', 'completion_tokens', 'reasoning_tokens']
-    mysql_filter_mapping = {'pid': 'pid', 'sid': 'sid'}  # (mysql_key, obj_key)
+    max_input_length = None
+    disable_thinking = True
 
-    global_cacher_keys = []
+    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
+
+    @property
+    def client(self):
+        from openai import AsyncOpenAI  # pip install openai
+        return AsyncOpenAI(**self.client_kwargs)
+
+    def make_post_kwargs(self, sys=None, user=None, messages=None, post_kwargs=dict()):
+        messages = messages or [
+            {
+                "role": "system",
+                "content": sys,
+            },
+            {
+                "role": "user",
+                "content": user,
+            },
+        ]
+        if self.max_input_length and len(str(messages)) > self.max_input_length:
+            raise exceptions.LLMInputOutOfLengthException(len(str(messages)), self.max_input_length)
+
+        post_kwargs.update(
+            model=self.model,
+            input=messages,
+        )
+
+        return post_kwargs
+
+    async def run(self, **post_kwargs):
+        # solve: RuntimeError: Event loop is closed
+        async with self.client as client:
+            return await client.responses.create(**post_kwargs)
+
+    def request(
+            self, sys=None, user=None, messages=None,
+            **post_kwargs
+    ):
+        post_kwargs = self.make_post_kwargs(sys=sys, user=user, messages=messages, post_kwargs=post_kwargs)
+        return asyncio.run(self.run(**post_kwargs))
+
+    async def on_stream_request(self, sys=None, user=None, messages=None, **post_kwargs):
+        post_kwargs = self.make_post_kwargs(sys=sys, user=user, messages=messages, post_kwargs=post_kwargs)
+
+        async for chunk in await self.client.responses.create(
+                stream=True,
+                **post_kwargs
+        ):
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+
+
+class VlClient(skeletons.RetryModule):
+    model: str
+    client_kwargs: dict = {}
+
+    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
+
+    @property
+    def client(self):
+        from openai import AsyncOpenAI  # pip install openai
+        return AsyncOpenAI(**self.client_kwargs)
+
+    def make_post_kwargs(self, img_url=None, messages=None, post_kwargs=dict()):
+        messages = messages or [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": img_url
+                        },
+                    },
+                    {"type": "text", "text": "这张图片描述了些什么？"},
+                ],
+            }
+        ]
+
+        post_kwargs.update(
+            model=self.model,
+            messages=messages,
+        )
+
+        return post_kwargs
+
+    async def run(self, **post_kwargs):
+        # solve: RuntimeError: Event loop is closed
+        async with self.client as client:
+            post_result = await client.chat.completions.create(**post_kwargs)
+
+        if post_result.choices[0].finish_reason == 'content_filter':
+            raise exceptions.LLMBlockException()
+
+        return post_result
+
+    def request(self, img_url=None, messages=None, return_content=True, **post_kwargs):
+        post_kwargs = self.make_post_kwargs(img_url=img_url, messages=messages, post_kwargs=post_kwargs)
+        post_result = asyncio.run(self.run(**post_kwargs))
+
+        if return_content:
+            return post_result.choices[0].message.content
+        else:
+            return post_result
+
+
+class ChatClientMysqlCallbackModule(ChatClient):
+    mysql_callback_kwargs: dict
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
-        self.callback_wrapper.register_success_callback(
-            callbacks.TimeLoggerCallback(
-                fmt='[{pid}-{sid}] request ' + self.model + ' takes {time:.2f} s'
-            )
+        mysql_callback_kwargs = dict(
+            mysql_cacher_keys=['model', 'messages', 'content', 'reasoning_content', 'total_tokens', 'prompt_tokens', 'completion_tokens', 'reasoning_tokens'],
+            mysql_filter_mapping={'pid': 'pid', 'sid': 'sid'},  # (mysql_key, obj_key)
+            global_cacher_keys=[],
         )
-
-        self.callback_wrapper.register_success_callback(
-            _callbacks.TimeDbCacheCallback(
-                mysql_table=self.mysql_table,
-                db_filter_mapping=self.mysql_filter_mapping,
-                cache_key='duration'
-            )
-        )
+        mysql_callback_kwargs.update(self.mysql_callback_kwargs)
+        self.mysql_callback_module = base.MysqlCallbackModule(**mysql_callback_kwargs)
         self.ignore_errors = False
+
+    def request(
+            self, *args,
+            pid=None, sid=None, return_content=True,
+            **post_kwargs
+    ):
+        t1 = time.time()
+        post_result = super().request(*args, return_content=False, **post_kwargs)
+        t2 = time.time()
+        message = post_result.choices[0].message
+        content = message.content
+        reasoning_content = message.model_extra.get('reasoning_content', '')
+
+        usage = post_result.usage
+        completion_tokens = usage.completion_tokens
+        prompt_tokens = usage.prompt_tokens
+        total_tokens = usage.total_tokens
+        reasoning_tokens = usage.completion_tokens_details.reasoning_tokens if usage.completion_tokens_details else 0
+
+        self.mysql_callback_module(dict(
+            pid=pid,
+            sid=sid,
+            model=self.model,
+            messages=post_kwargs['messages'],
+            content=content,
+            reasoning_content=reasoning_content,
+            total_tokens=total_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            duration=t2-t1
+        ))
+
+        if return_content:
+            return post_result.choices[0].message.content
+        else:
+            return post_result
+
 
     def gen_kwargs(self, obj, **kwargs):
         kwargs = super().gen_kwargs(obj, **kwargs)
@@ -128,151 +296,30 @@ class OpenaiMysqlCallbackModule(Openai, base.MysqlCallbackModule):
         return obj
 
 
-class Volcengine(skeletons.RetryModule):
-    model: str
-
+class Volcengine(ChatClient):
     client_kwargs = dict(
         api_key=os.getenv('VOL_API_KEY', ""),
         base_url="https://ark.cn-beijing.volces.com/api/v3",
     )
-    llm_client_kwargs = {}
-    disable_thinking = True
-
-    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.llm_client = Openai(
-            model=self.model,
-            client_kwargs=self.client_kwargs,
-            **self.llm_client_kwargs
-        )
-
-    def request(
-            self, sys=None, user=None, messages=None,
-            return_content=True, global_kwargs={}, **post_kwargs
-    ):
-        messages = messages or [
-            {
-                "role": "system",
-                "content": sys,
-            },
-            {
-                "role": "user",
-                "content": user,
-            },
-        ]
-
-        if self.disable_thinking:
-            post_kwargs.setdefault(
-                'extra_body',
-                dict(
-                    thinking={
-                        "type": "disabled"
-                    },
-                    chat_template_kwargs={"enable_thinking": False},
-                    enable_thinking=False
-                )
-            )
-
-        ret = self.llm_client(dict(
-            post_kwargs=dict(
-                messages=messages,
-                **post_kwargs
-            ),
-        ), **global_kwargs)
-        if return_content:
-            return ret['content']
-        else:
-            return ret
-
-    def on_stream_request(self, sys, user, **post_kwargs):
-        messages = [
-            {
-                "role": "system",
-                "content": sys,
-            },
-            {
-                "role": "user",
-                "content": user,
-            },
-        ]
-
-        return self.llm_client.on_stream_process(dict(
-            post_kwargs=dict(
-                messages=messages,
-                **post_kwargs
-            )
-        ))
 
 
-class VolcengineMysqlModule(Volcengine):
+class VolcengineMysqlModule(ChatClientMysqlCallbackModule):
     """
     Usage:
-        class LlmRequest(VolcengineDbCallbackModule):
+        class LlmRequest(VolcengineMysqlModule):
             def on_process(self, obj, task_id=None, **kwargs):
                 ...
                 llm_result = self.request(
                     sys,
                     user,
-                    global_kwargs=dict(
-                        pid=obj['id'],
-                        task_id=task_id,
-                        sid="xxx"
-                    )
+                    pid=task_id,   # or use obj['id']
+                    sid="xxx"
                 )
                 ...
                 return obj
 
     """
-    llm_cacher_mysql_table: str
-    max_input_length: int = None
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.llm_client = OpenaiMysqlCallbackModule(
-            model=self.model,
-            client_kwargs=self.client_kwargs,
-            mysql_table=self.llm_cacher_mysql_table,
-            max_input_length=self.max_input_length
-        )
-
-
-class QwenVl(skeletons.RetryModule):
-    model = "qwen-vl-max-latest"
-
-    client_kwargs = dict()
-    llm_client_kwargs = {}
-    err_type = (ConnectionError, openai.APIConnectionError, exceptions.LLMParseException)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.llm_client = Openai(
-            model=self.model,
-            client_kwargs=self.client_kwargs,
-            **self.llm_client_kwargs
-        )
-
-    def request(self, img_url, **post_kwargs):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": img_url
-                        },
-                    },
-                    {"type": "text", "text": "这张图片描述了些什么？"},
-                ],
-            }
-        ]
-
-        ret = self.llm_client(dict(
-            post_kwargs=dict(
-                messages=messages,
-                **post_kwargs
-            )
-        ))
-        return ret['content']
+    client_kwargs = dict(
+        api_key=os.getenv('VOL_API_KEY', ""),
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+    )

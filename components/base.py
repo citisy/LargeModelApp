@@ -151,11 +151,11 @@ class BaseCallbackModule(skeletons.Module):
 
 class MysqlCallbackModule(BaseCallbackModule):
     add_mysql_callback = True
-    mysql_table: str = None
+    mysql_table: str = ''
     allow_duplicates = False
     mysql_cacher_keys: list = []
     mysql_error_key: str = 'error_msg'
-    mysql_status_code_key: str = None
+    mysql_status_code_key: str = ''
     mysql_filter_mapping = {'id': 'id'}  # (mysql_key, obj_key)
 
     def __init__(self, **kwargs):

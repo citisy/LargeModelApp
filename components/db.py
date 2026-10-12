@@ -5,11 +5,11 @@ from workflows import callbacks, exceptions, skeletons
 
 
 class MysqlDbModule(skeletons.Module):
-    mysql_host = os.getenv('mysql_host', 'xxx')
-    mysql_port = os.getenv('mysql_port', 'xxx')
-    mysql_user = os.getenv('mysql_user', 'xxx')
-    mysql_pwd = os.getenv('mysql_pwd', 'xxx')
-    mysql_db = os.getenv('mysql_db', 'xxx')
+    mysql_host = os.getenv('mysql_host', '127.0.0.1')
+    mysql_port = int(os.getenv('mysql_port', '3306'))
+    mysql_user = os.getenv('mysql_user', '')
+    mysql_pwd = os.getenv('mysql_pwd', '')
+    mysql_db = os.getenv('mysql_db', '')
     mysql_table: str = ''
 
     def __init__(self, **kwargs):
